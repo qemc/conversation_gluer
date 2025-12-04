@@ -1,0 +1,7 @@
+.env
+**/.DS_Store
+conversations/
+pliki_z_fabryki/
+qdrant_storage/
+package-lock.json
+node_modules/
