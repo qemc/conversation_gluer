@@ -1,3 +1,5 @@
+import { BaseMessage } from "@langchain/core/messages"
+
 export interface Conversation{
     start:string,
     end:string,
@@ -25,4 +27,4 @@ export interface Part_cosine_similarity{
     cosine_sim: number
 }
 
-export type ChainIO = Record<string, string | number>;
+export type ChainIO = Record<string, any>;

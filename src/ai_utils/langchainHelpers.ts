@@ -6,6 +6,8 @@ import { OpenAIEmbeddings } from "@langchain/openai";
 import { ChainIO } from "../types.js";
 import { QdrantClient } from "@qdrant/js-client-rest";
 import readline from "readline";
+import { BaseMessage } from "@langchain/core/messages";
+import { string } from "zod/v3";
 
 export function system_user_prompt(
     system_prompt: string,
@@ -46,44 +48,48 @@ export function make_router(
 
     model: ChatOpenAI, // model which will process the question
     output_key: string, // the key under which the llm answer will be saved to the output
-    prompt:ChatPromptTemplate // The prompt that will be used for that call
+    prompt: ChatPromptTemplate // The prompt that will be used for that call
 ){
     return RunnableLambda.from<ChainIO, ChainIO> (async (input) => {
 
+        const promptValue = await prompt.invoke(input)
+        const promptMessages = promptValue.toChatMessages()
+        const llm_response = await model.invoke(promptValue)
 
-        const prompt_ = await prompt.invoke(input) 
-        console.log(`Prompt: \n${prompt_}`)
+        let rawText = "";
 
-        const llm_response = await model.invoke(prompt_)
+        if (BaseMessage.isInstance(llm_response)){
+          const content = llm_response.content;
+
+          if (typeof content === "string") {
+                rawText = content.trim();
+          }
+        }
+        else{
+          rawText = String(llm_response).trim()
+        }
         
+        const hasToolCalls = (llm_response?.tool_calls?.length ?? 0) > 0;
 
-        const rawText = 
-            typeof llm_response === "string"
-                ? llm_response
-                : String(llm_response.content).trim() || '';
-        
-        if(rawText === '') throw new Error(`Router error whith prompt: ${prompt_}`)
-        
-        let tokensUsed = 0;
-        const meta = (llm_response as any)?.response_metadata;
-
-        if (meta?.tokenUsage?.totalTokens) {
-        tokensUsed = meta.tokenUsage.totalTokens;
-        } 
-        else if ((llm_response as any)?.usage?.total_tokens) {
-        tokensUsed = (llm_response as any).usage.total_tokens;
+        if (!rawText && !hasToolCalls) {
+            throw new Error(`Router error: Empty response.`);
         }
 
-        const previously_used_tokens: number = Number(input?.tokens_so_far) || 0;
-        const new_total_tokens = tokensUsed + previously_used_tokens;
+        let tokensUsed = 0;
+        // Standard LangChain JS usage location
+        if (llm_response?.usage_metadata?.total_tokens) {
+            tokensUsed = llm_response.usage_metadata.total_tokens;
+        }
 
-        console.log(rawText)
+        const prevTokens = Number(input.tokens_so_far) || 0;
 
         return {
             ...input,
             [output_key]: rawText,
-            tokens_so_far: new_total_tokens
-        }
+            api_response: llm_response, 
+            tokens_so_far: tokensUsed + prevTokens,
+            prompt_messages: promptMessages
+        };
     });
 };
 

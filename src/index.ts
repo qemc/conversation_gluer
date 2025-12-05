@@ -6,7 +6,7 @@ import { make_router, system_user_prompt,qdrant_default_client, createQdrantColl
 import { ChatPromptTemplate } from '@langchain/core/prompts';
 import { RunnableLambda } from '@langchain/core/runnables';
 import { JsonOutputParser } from '@langchain/core/output_parsers';
-import { SemanticChunker } from './ai_utils/semantic_chunking_ts/chunking.js';
+import { invokeAgent } from './langgraphAgent.js';
 
 
 const model_o4mini = LangChainOpenAImodel('o4-mini');
@@ -56,9 +56,9 @@ async function process_converstaion_data(url: string):Promise<Data> {
         parts: parts
     } as Data
 }
-
-
 const url = fetch_env('AIDEVS_URL_ZAD51')
+const processedConversations = await process_converstaion_data(url)
+
 // The idea was to test how embeddings would work with completing the conversation. 
 // It definietley did not fulfil the requirements. 
 // Although it was fun to test it. 
@@ -315,43 +315,4 @@ async function try_llm(
     }
 }
 
-try_llm(url)
-
-const splitTest = new SemanticChunker(
-    1,
-    "text-embedding-3-small",
-)
-// splitTest.chunkPercentileMinMax(`Sektor B jest miejscem intensywnych prac badawczo-rozwojowych nad nowoczesnymi ogniwami bateryjnymi, które mają zrewolucjonizować wydajność energetyczną zarówno w przemyśle, jak i zastosowaniach militarnych. Pracują tu zespoły inżynierów i naukowców, którzy codziennie testują prototypy ogniw o wysokiej gęstości energetycznej, starając się zwiększyć ich pojemność, trwałość oraz odporność na ekstremalne warunki. Laboratoria w sektorze B są wyposażone w zaawansowane aparaty diagnostyczne, które umożliwiają analizę mikroskopijnych struktur materiałów, co pozwala na stałe udoskonalanie składu chemicznego ogniw. 
-
-// Bezpieczeństwo w sektorze jest priorytetem, ponieważ wiele eksperymentów wiąże się z ryzykiem wybuchów lub emisji toksycznych gazów. Wszelkie eksperymenty są przeprowadzane w specjalnie zabezpieczonych komorach, a technicy i naukowcy muszą nosić pełne wyposażenie ochronne. Każdy prototyp jest rygorystycznie testowany na wytrzymałość w różnych warunkach, od głębokiego chłodzenia po wysokie temperatury, aby upewnić się, że nowa technologia spełni wymagania wojskowe. Dzięki zastosowaniu algorytmów sztucznej inteligencji, procesy testowe są monitorowane i optymalizowane w czasie rzeczywistym, co pozwala na szybsze wprowadzanie poprawek i modyfikacji.
-
-// Sektor B to także miejsce, gdzie rozwijane są technologie szybkiego ładowania i regeneracji baterii, co jest kluczowe dla zapewnienia wysokiej mobilności maszyn wojskowych. Strefa ta pozostaje pod stałym nadzorem, a dostęp do niej jest ściśle ograniczony, mają go wyłącznie osoby z odpowiednim poziomem uprawnień. Każdy etap produkcji i testów jest archiwizowany, co zapewnia pełną kontrolę nad postępem prac oraz umożliwia weryfikację wyników badań w dowolnym momencie. Sektor B symbolizuje przyszłość energetyki przemysłowej, będąc ośrodkiem innowacji, które mają zapewnić przewagę technologiczną w nadchodzących latach.
-
-// Sektor A to serce fabryki, gdzie odbywa się montaż zarówno zaawansowanych robotów przemysłowych, jak i jednostek wojskowych przeznaczonych do działań bojowych. Przestrzeń tego sektora jest podzielona na strefy, z których każda dedykowana jest innemu etapowi montażu. W jednym z głównych obszarów znajdują się linie produkcyjne, gdzie roboty przemysłowe – zaprogramowane do wykonywania precyzyjnych operacji – budują swoich mechanicznych następców, tworząc komponenty z niezwykłą dokładnością. Strefy wojskowe są natomiast odizolowane i wyposażone w dodatkowe zabezpieczenia, mające na celu ochronę technologii oraz specjalistycznych części używanych wyłącznie do celów militarnych. 
-
-// W sektorze panuje rygorystyczna kontrola jakości, a każdy zbudowany robot przechodzi szereg testów, zanim trafi na dalsze etapy produkcji lub do działów testowych. Konstrukcja każdego robota wojskowego jest objęta najwyższym stopniem tajności – zarówno inżynierowie, jak i operatorzy przechodzą liczne kontrole bezpieczeństwa, by wykluczyć możliwość wycieku technologii. Procesy montażowe są nadzorowane przez sztuczną inteligencję, która optymalizuje przepływ pracy i przydziela zadania w czasie rzeczywistym, minimalizując przestoje i błędy. Na stanowiskach montażowych pracują technicy wyposażeni w zaawansowane egzoszkielety, które pozwalają im podnosić ciężkie elementy oraz zapewniają ochronę przed potencjalnie niebezpiecznymi komponentami. 
-
-// Dla zabezpieczenia, każda strefa sektora A jest chroniona przez system monitoringu, który rejestruje każdy ruch i wykrywa wszelkie anomalie w pracy. Dodatkowo, w wyznaczonych strefach montażu militarnego instalowane są dodatkowe systemy biometryczne, by upewnić się, że tylko upoważnione osoby mają dostęp do najtajniejszych projektów. Sektor A jest istotnym punktem strategicznym fabryki, będąc zarówno symbolem technicznego postępu, jak i nowej ery przemysłowej, która stawia na autonomię i adaptacyjność robotów.
-// `, 95, {
-//     fileLocation: 'test location',
-//     numberInSequence: 'test number in sequence',
-//     keyWords: ['keywor1', 'keyword2','keyword3','keyword4']
-// }, 300, 500)
-
-
-// splitTest.chunkPercentile(`Sektor B jest miejscem intensywnych prac badawczo-rozwojowych nad nowoczesnymi ogniwami bateryjnymi, które mają zrewolucjonizować wydajność energetyczną zarówno w przemyśle, jak i zastosowaniach militarnych. Pracują tu zespoły inżynierów i naukowców, którzy codziennie testują prototypy ogniw o wysokiej gęstości energetycznej, starając się zwiększyć ich pojemność, trwałość oraz odporność na ekstremalne warunki. Laboratoria w sektorze B są wyposażone w zaawansowane aparaty diagnostyczne, które umożliwiają analizę mikroskopijnych struktur materiałów, co pozwala na stałe udoskonalanie składu chemicznego ogniw. 
-
-// Bezpieczeństwo w sektorze jest priorytetem, ponieważ wiele eksperymentów wiąże się z ryzykiem wybuchów lub emisji toksycznych gazów. Wszelkie eksperymenty są przeprowadzane w specjalnie zabezpieczonych komorach, a technicy i naukowcy muszą nosić pełne wyposażenie ochronne. Każdy prototyp jest rygorystycznie testowany na wytrzymałość w różnych warunkach, od głębokiego chłodzenia po wysokie temperatury, aby upewnić się, że nowa technologia spełni wymagania wojskowe. Dzięki zastosowaniu algorytmów sztucznej inteligencji, procesy testowe są monitorowane i optymalizowane w czasie rzeczywistym, co pozwala na szybsze wprowadzanie poprawek i modyfikacji.
-
-// Sektor B to także miejsce, gdzie rozwijane są technologie szybkiego ładowania i regeneracji baterii, co jest kluczowe dla zapewnienia wysokiej mobilności maszyn wojskowych. Strefa ta pozostaje pod stałym nadzorem, a dostęp do niej jest ściśle ograniczony, mają go wyłącznie osoby z odpowiednim poziomem uprawnień. Każdy etap produkcji i testów jest archiwizowany, co zapewnia pełną kontrolę nad postępem prac oraz umożliwia weryfikację wyników badań w dowolnym momencie. Sektor B symbolizuje przyszłość energetyki przemysłowej, będąc ośrodkiem innowacji, które mają zapewnić przewagę technologiczną w nadchodzących latach.
-
-// `, 95, {
-//     fileLocation: 'test location',
-//     numberInSequence: 'test number in sequence',
-//     keyWords: ['keywor1', 'keyword2','keyword3','keyword4']
-// })
-
-// To do:
-// Figure out the agent way of figuring out the rest of the conversation. 
-// Keep the remaining progress saved somewhere
-// Save what was done on the previous iteration. 
+await invokeAgent(processedConversations)
