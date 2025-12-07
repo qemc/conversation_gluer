@@ -53,13 +53,33 @@ export function normalize_to_compare(str: string): string {
     .replace(/[^\p{L}\p{N}]/gu, ''); // Remove non-letters/non-numbers (Unicode safe for Polish)
 }
 
-export function filterOutItems(sourceArray: string[], itemsToRemove: string[]): string[] {
-
+export function filterOutItems(sourceArray: string[], itemsToRemove: string[]): { filteredList: string[], removedCount: number } {
   const exclusionSet = new Set(
     itemsToRemove.map((item) => normalize_to_compare(item))
   );
-  return sourceArray.filter((item) => {
+
+  const filteredList = sourceArray.filter((item) => {
     const normalizedItem = normalize_to_compare(item);
     return !exclusionSet.has(normalizedItem);
   });
+
+  return {
+    filteredList,
+    removedCount: sourceArray.length - filteredList.length
+  };
+}
+
+
+export async function saveJsonToFile(
+  fileName: string, 
+  rootPath: string, 
+  data: any
+): Promise<void> {
+
+  const fullPath = path.join(rootPath, fileName);
+  const jsonContent = JSON.stringify(data, null, 2);
+
+  await fs.writeFile(fullPath, jsonContent, 'utf-8');
+  console.log(`Saved data to ${fullPath}`);
+  
 }

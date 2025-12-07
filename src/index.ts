@@ -1,36 +1,19 @@
 import 'dotenv/config';
 import { fetch_url, fetch_env, parse_json_to_array, saveToFile, normalize_to_compare } from './utils/utils.js';
-import { Conversation, Data, Part_embeddings, Part_cosine_similarity, ChainIO} from './types.js';
+import { Conversation, Data, Part_embeddings, Part_cosine_similarity, ChainIO, ConvDetails} from './types.js';
 import { cosineSimilarity } from '@langchain/core/utils/math';
-import { make_router, system_user_prompt,qdrant_default_client, createQdrantCollection, get_embedding, LangChainOpenAImodel, make_human_router } from './ai_utils/langchainHelpers.js';
+import { make_router, system_user_prompt, get_embedding, LangChainOpenAImodel, make_human_router } from './ai_utils/langchainHelpers.js';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
 import { RunnableLambda } from '@langchain/core/runnables';
 import { JsonOutputParser } from '@langchain/core/output_parsers';
 import { invokeAgent } from './langgraphAgent.js';
 
 
-const model_o4mini = LangChainOpenAImodel('o4-mini');
 const model_5nano = LangChainOpenAImodel();
-const model_51 = LangChainOpenAImodel('gpt-5.1');
 const model_5mini = LangChainOpenAImodel('gpt-5-mini');
 const model_o3 = LangChainOpenAImodel('o3');
 
-
 const parser = new JsonOutputParser();
-// const qdrant_client: QdrantClient = qdrant_default_client
-
-// const qdrant_embeddings = new OpenAIEmbeddings({
-//     model: "text-embedding-3-small",
-//     apiKey: process.env.OPENAI_API_KEY,
-// });
-
-
-
-type ConvDetails = {
-    text: string,
-    details: Record<string,string[]>
-}
-
 
 async function process_converstaion_data(url: string):Promise<Data> {
     const data = await fetch_url(url)

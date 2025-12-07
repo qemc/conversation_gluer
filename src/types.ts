@@ -28,3 +28,14 @@ export interface Part_cosine_similarity{
 }
 
 export type ChainIO = Record<string, any>;
+
+export type ConvDetails = {
+    text: string,
+    details: Record<string,string[]>
+}
+
+
+export type JsonFileConv = {
+    convId: number
+    conversation: string[],
+}

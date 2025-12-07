@@ -1,15 +1,15 @@
-import { StateGraph, MessagesAnnotation, START, END, Annotation, messagesStateReducer, MemorySaver, interrupt } from "@langchain/langgraph";
-import { ChatOpenAI, messageToOpenAIRole } from "@langchain/openai";
-import { Conversation, Data } from "./types.js";
+import { StateGraph, START, END, Annotation, messagesStateReducer, MemorySaver } from "@langchain/langgraph";
+import { ChatOpenAI } from "@langchain/openai";
+import { Conversation, Data, JsonFileConv } from "./types.js";
 import { BaseMessage } from "@langchain/core/messages";
 import * as readline from "node:readline/promises"
 import { stdin, stdout } from "node:process";
 import { make_router, system_user_prompt } from "./ai_utils/langchainHelpers.js";
 import { JsonOutputParser } from "@langchain/core/output_parsers";
-import { filterOutItems } from "./utils/utils.js";
+import { filterOutItems, saveJsonToFile } from "./utils/utils.js";
 
 const model = new ChatOpenAI({
-    model: 'gpt-5-nano'
+    model: 'o3'
 })
 const parser = new JsonOutputParser();
 
@@ -90,7 +90,7 @@ async function promptNode(state: typeof State.State) {
         parts: statementsList
     })
 
-    console.dir(result, { depth: null, colors: true });
+    console.dir(result.api_response, { depth: null, colors: true });
 
     return{
         convId: state.convId + 1,
@@ -123,12 +123,19 @@ async function parserNode(state: typeof State.State){
 
         const cleanList = parsedData as string[];
         const statements = state.statementsList
-        const newStatements = filterOutItems(statements, cleanList)
+        const {filteredList, removedCount} = filterOutItems(statements, cleanList)
+
+        console.log(state.conversations[state.convId - 1].length - 2)
+        console.log(removedCount)
         
-        return{
-            statementsList: newStatements
+        if (removedCount !== state.conversations[state.convId - 1].length - 2) {
+            throw new Error("Removed items count does not equal length of needed items");
         }
-    
+        console.log(filteredList)
+
+        return{
+            statementsList: filteredList
+        }
     }
     catch(err){
         console.log(err)
@@ -141,6 +148,24 @@ async function parserNode(state: typeof State.State){
 function humanApprove(state: typeof State.State){
     console.log("hey, I'm a human node")
     return{}
+}
+
+async function saverNode(state: typeof State.State){
+
+    const lastMessage = state.aiResponses[state.aiResponses.length - 1];
+    const content = lastMessage.content as string;
+    
+    const parsedData = await parser.parse(content);
+    
+    const jsonContent = {
+        convId: state.convId,
+        conversation: parsedData
+    } as JsonFileConv
+
+    const CONV_PATH = process.env['CONV_PATH'] as string;
+    saveJsonToFile(`conv${state.convId}.json`,CONV_PATH, jsonContent)
+
+    return {}
 }
 
 export async function invokeAgent(data: Data){
@@ -177,10 +202,10 @@ export async function invokeAgent(data: Data){
             routerAfterHuman,
             {
                 finish: 'parser',
-                retry: '__end__'
+                retry: END
             }
         )
-        .addEdge('__start__', 'prompt')
+        .addEdge(START, 'prompt')
         .addEdge('parser', 'prompt')
 
     // first workflow compilation
@@ -192,7 +217,6 @@ export async function invokeAgent(data: Data){
     // app invokation
     await app.invoke(initialState, config)
     // after above command Agent starts his job
-
 
     // HITL implementation
     const rl = readline.createInterface({ input: stdin, output: stdout });
@@ -226,3 +250,9 @@ export async function invokeAgent(data: Data){
     rl.close();
 
 }
+
+
+// TO DO:
+// Implement saverNode to the graph structure
+// Test if saverNode works properly
+// Think of implementing initial state from file (so the successfully processed conversations won't be processed multiple times)
