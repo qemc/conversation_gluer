@@ -109,7 +109,6 @@ export async function get_embedding(text:string): Promise<number[]>{
 
         return result;
 }
-
 // createQdrantCollection(qdrant_client, 'zad51_coll', 1536, 'Cosine')
 export async function createQdrantCollection(
 
@@ -148,8 +147,6 @@ export const qdrant_default_client = new QdrantClient({
   url: process.env.QDRANT_URL!,
   apiKey: process.env.QDRANT_API_KEY!,
 });
-
-
 
 async function askUser(question: string): Promise<boolean> {
   const rl = readline.createInterface({

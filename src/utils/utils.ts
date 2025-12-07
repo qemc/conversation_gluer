@@ -52,3 +52,14 @@ export function normalize_to_compare(str: string): string {
     .replace(/\s+/g, '')           // Remove all whitespace
     .replace(/[^\p{L}\p{N}]/gu, ''); // Remove non-letters/non-numbers (Unicode safe for Polish)
 }
+
+export function filterOutItems(sourceArray: string[], itemsToRemove: string[]): string[] {
+
+  const exclusionSet = new Set(
+    itemsToRemove.map((item) => normalize_to_compare(item))
+  );
+  return sourceArray.filter((item) => {
+    const normalizedItem = normalize_to_compare(item);
+    return !exclusionSet.has(normalizedItem);
+  });
+}

@@ -275,7 +275,9 @@ async function try_llm(
         Konwersacja:
         {data}
         `
+        
         )
+
         const sumary_router: RunnableLambda<ChainIO,ChainIO> = make_router(
             model_5mini, 
             'summary',
@@ -283,18 +285,12 @@ async function try_llm(
         )
 
         const res = parts.filter(bigItem => {
-        const bigNorm = normalize_to_compare(bigItem);
-        const existsInSmall = raw_used_parts.some(smallItem => normalize_to_compare(smallItem) === bigNorm);
-        return !existsInSmall; 
+            const bigNorm = normalize_to_compare(bigItem);
+            const existsInSmall = raw_used_parts.some(smallItem => normalize_to_compare(smallItem) === bigNorm);
+            return !existsInSmall; 
         });
 
         parts = res;
-
-
-        console.log(parts)
-        console.log('\n')
-        console.log(res)
-        console.log('\n')
 
         if(!result?.human_result) throw new Error(`Not approved by human user at conversation nr ${i+1} \n`)
 
