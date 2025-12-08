@@ -5,3 +5,4 @@ pliki_z_fabryki/
 qdrant_storage/
 package-lock.json
 node_modules/
+cache/

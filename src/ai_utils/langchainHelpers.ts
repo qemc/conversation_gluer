@@ -8,6 +8,7 @@ import { QdrantClient } from "@qdrant/js-client-rest";
 import readline from "readline";
 import { BaseMessage } from "@langchain/core/messages";
 import { string } from "zod/v3";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 
 export function system_user_prompt(
     system_prompt: string,
@@ -46,7 +47,7 @@ export function LangChainOpenAImodel(
 
 export function make_router(
 
-    model: ChatOpenAI, // model which will process the question
+    model: ChatOpenAI | ChatGoogleGenerativeAI, // model which will process the question
     output_key: string, // the key under which the llm answer will be saved to the output
     prompt: ChatPromptTemplate // The prompt that will be used for that call
 ){

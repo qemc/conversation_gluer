@@ -1,17 +1,45 @@
 import { StateGraph, START, END, Annotation, messagesStateReducer, MemorySaver } from "@langchain/langgraph";
 import { ChatOpenAI } from "@langchain/openai";
-import { Conversation, Data, JsonFileConv } from "./types.js";
+import { Conversation, Data, JsonFileConv, saveCache } from "./types.js";
 import { BaseMessage } from "@langchain/core/messages";
 import * as readline from "node:readline/promises"
 import {stdin, stdout } from "node:process";
 import { make_router, system_user_prompt } from "./ai_utils/langchainHelpers.js";
 import { JsonOutputParser } from "@langchain/core/output_parsers";
 import { filterOutItems, saveJsonToFile } from "./utils/utils.js";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import { promises as fs } from "fs";
+import * as path from 'path';
 
 const model = new ChatOpenAI({
     model: 'o3'
 })
+
+// const model = new ChatGoogleGenerativeAI({
+//     model: 'gemini-2.5-flash'
+// })
+
+const CACHE_PATH = process.env['CACHE_PATH'] as string;
+const CONV_PATH = process.env['CONV_PATH'] as string;
 const parser = new JsonOutputParser();
+
+async function handleInitialState(){
+    try {
+        const fileContent = await fs.readFile(`${CACHE_PATH}/cache.json`,'utf-8')
+        const savedState = JSON.parse(fileContent) as saveCache;
+
+        return{
+            convId: savedState.currConvId,
+            usedParts: savedState.usedParts
+        }
+
+    } catch (error) {
+        return{
+            convId: 0,
+            usedParts: []
+        }
+    }
+}
 
 const State = Annotation.Root({
 
@@ -22,9 +50,10 @@ const State = Annotation.Root({
         default: () => []
     }),
     convId: Annotation<number>,
-    isApproved: Annotation<boolean>,
+    isApproved: Annotation<string>,
     previousResponses: Annotation<string[]>,
-    parsingError: Annotation<boolean>
+    parsingError: Annotation<boolean>, 
+    usedParts: Annotation<string[]>
 })
 
 async function promptNode(state: typeof State.State) {
@@ -40,7 +69,7 @@ async function promptNode(state: typeof State.State) {
     console.log(`ID: ${convId}`)
 
     let previous = 'NONE';
-    if (!state.isApproved){
+    if (state.isApproved === 'false'){
         previous = state.previousResponses.join('\n----------\n')
     }
 
@@ -102,7 +131,7 @@ async function promptNode(state: typeof State.State) {
 
     return{
         aiResponses: [result.api_response],
-        isApproved: false,
+        isApproved: 'false',
         parsingError: false,
         previousResponses: previousResponses
     }
@@ -132,8 +161,12 @@ async function parserNode(state: typeof State.State){
             throw new Error("Removed items count does not equal length of needed items");
         }
 
+        const alreadyUsedParts = state.usedParts
+        const newUsedParts = [...alreadyUsedParts, ...cleanList]
+
         return{
-            statementsList: filteredList
+            statementsList: filteredList,
+            usedParts: newUsedParts
         }
     }
     catch(err){
@@ -163,7 +196,7 @@ async function saverNode(state: typeof State.State){
         conversation: parsedData
     } as JsonFileConv
 
-    const CONV_PATH = process.env['CONV_PATH'] as string;
+    
     saveJsonToFile(`conv${state.convId}.json`,CONV_PATH, jsonContent)
 
     return {
@@ -171,13 +204,28 @@ async function saverNode(state: typeof State.State){
         previousResponses: []
     }
 }
+
+async function saveCurrentResultsNode(state: typeof State.State){
+
+    const cacheToSave = {
+        currConvId: state.convId,
+        usedParts: state.usedParts
+    } as saveCache
+
+    saveJsonToFile(`cache.json`,CACHE_PATH, cacheToSave)
+
+    return {}
+} 
+
 function routerAfterHuman(state: typeof State.State){
 
-    if(state.isApproved){
+    if(state.isApproved === 'true'){
         return 'finish'
     }
-    else{
+    else if(state.isApproved === 'false') {
         return 'retry'
+    }else{
+        return 'end'
     }
 }
 
@@ -208,15 +256,25 @@ export async function invokeAgent(data: Data){
     let parts_ = data.parts
     let parts = parts_.map((key) => key.trim())
 
+    const {convId, usedParts} = await handleInitialState();
+    const {filteredList, removedCount} = filterOutItems(parts, usedParts)
+
+    console.log((usedParts.length - (convId*2)))
+    console.log(removedCount)
+    if(removedCount !== (usedParts.length - (convId*2))){
+        throw new Error('Error while parsing cache')
+    }
+    
     // initial state definition
     const initialState: typeof State.State = {
-        statementsList: parts,
+        statementsList: filteredList,
         conversations: conversations,
         aiResponses: [], 
-        convId: 0,
-        isApproved: true, 
+        convId: convId,
+        isApproved: 'true', 
         previousResponses: [],
-        parsingError: false
+        parsingError: false,
+        usedParts: usedParts
     }
 
     //config definition
@@ -231,13 +289,15 @@ export async function invokeAgent(data: Data){
         .addNode('human', humanApprove)
         .addNode('parser', parserNode)
         .addNode('saver', saverNode)
+        .addNode('cache',saveCurrentResultsNode)
         .addEdge('prompt','human')
         .addConditionalEdges(
             'human',
             routerAfterHuman,
             {
                 finish: 'parser',
-                retry: 'prompt'
+                retry: 'prompt',
+                end: 'cache'
             }
         )
         .addEdge(START, 'prompt')
@@ -253,10 +313,11 @@ export async function invokeAgent(data: Data){
             'saver',
             finalRouter,
             {
-                end: END,
+                end: 'cache',
                 continue: 'prompt'
             }
         )
+        .addEdge('cache', END)
 
     // first workflow compilation
     const app = workflow.compile({
@@ -283,13 +344,13 @@ export async function invokeAgent(data: Data){
 
         const answer = await rl.question("Approve? (y/n): ")
 
-        let approval = false
+        let approval = 'false'
 
         if(answer === 'y'){
-            approval = true
+            approval = 'true'
         }
         if(answer === 'q'){
-            break
+            approval = 'break'
         }
 
         await app.updateState(config, {
@@ -301,9 +362,8 @@ export async function invokeAgent(data: Data){
     rl.close();
 }
 
-
 // TO DO:
 // Implement saverNode to the graph structure - done
 // Test if saverNode works properly - done
-// Think of implementing initial state from file (so the successfully processed conversations won't be processed multiple times) 
-// implement human feedback, allow user enter manual suggestions
+// Think of implementing initial state from file (so the successfully processed conversations won't be processed multiple times) - done
+

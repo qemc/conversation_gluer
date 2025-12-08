@@ -36,6 +36,11 @@ export type ConvDetails = {
 
 
 export type JsonFileConv = {
-    convId: number
-    conversation: string[],
+    convId: number,
+    conversation: string[]
+}
+
+export type saveCache = {
+    currConvId: number,
+    usedParts: string[]
 }

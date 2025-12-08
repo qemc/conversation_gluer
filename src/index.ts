@@ -294,4 +294,5 @@ async function try_llm(
     }
 }
 
-await invokeAgent(processedConversations)
+//await invokeAgent(processedConversations)
+console.log(await fetch_url('https://c3ntrala.ag3nts.org/data/5e69523f-9e71-44c4-8f69-58f89ee0f2a2/phone_sorted.json'))
