@@ -44,3 +44,8 @@ export type saveCache = {
     currConvId: number,
     usedParts: string[]
 }
+
+export type Question = {
+    questionId: number,
+    question: string
+}

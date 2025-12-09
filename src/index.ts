@@ -1,12 +1,14 @@
 import 'dotenv/config';
 import { fetch_url, fetch_env, parse_json_to_array, saveToFile, normalize_to_compare } from './utils/utils.js';
-import { Conversation, Data, Part_embeddings, Part_cosine_similarity, ChainIO, ConvDetails} from './types.js';
+import { Conversation, Data, Part_embeddings, Part_cosine_similarity, ChainIO, ConvDetails, Question} from './types.js';
 import { cosineSimilarity } from '@langchain/core/utils/math';
 import { make_router, system_user_prompt, get_embedding, LangChainOpenAImodel, make_human_router } from './ai_utils/langchainHelpers.js';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
 import { RunnableLambda } from '@langchain/core/runnables';
 import { JsonOutputParser } from '@langchain/core/output_parsers';
 import { invokeAgent } from './langgraphAgent.js';
+import { number } from 'zod/v3';
+import { invokeMainAgent } from './mainAgent.js';
 
 
 const model_5nano = LangChainOpenAImodel();
@@ -17,7 +19,6 @@ const parser = new JsonOutputParser();
 
 async function process_converstaion_data(url: string):Promise<Data> {
     const data = await fetch_url(url)
-    console.log(data)
     
     let con1 = data.rozmowa1 as Conversation
     let con2 = data.rozmowa2 as Conversation
@@ -40,7 +41,19 @@ async function process_converstaion_data(url: string):Promise<Data> {
     } as Data
 }
 const url = fetch_env('AIDEVS_URL_ZAD51')
-const processedConversations = await process_converstaion_data(url)
+// const processedConversations = await process_converstaion_data(url)
+
+async function getQuestions(url: string): Promise<Question[]>{
+    const questions = await fetch_url(url);
+    
+    const questionList: Question[] = Object.entries(questions).map(([id,text])=> ({
+        questionId: Number(id),
+        question: String(text)
+    })) 
+    return questionList
+}
+const questionsUrl = fetch_env('AIDEVS_URL_ZAD51_QUESTIONS')
+const questions: Question[] = await getQuestions(questionsUrl)
 
 // The idea was to test how embeddings would work with completing the conversation. 
 // It definietley did not fulfil the requirements. 
@@ -295,4 +308,5 @@ async function try_llm(
 }
 
 //await invokeAgent(processedConversations)
-console.log(await fetch_url('https://c3ntrala.ag3nts.org/data/5e69523f-9e71-44c4-8f69-58f89ee0f2a2/phone_sorted.json'))
+
+await invokeMainAgent(questions)

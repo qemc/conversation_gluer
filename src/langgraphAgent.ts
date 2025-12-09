@@ -197,7 +197,7 @@ async function saverNode(state: typeof State.State){
     } as JsonFileConv
 
     
-    saveJsonToFile(`conv${state.convId}.json`,CONV_PATH, jsonContent)
+    saveJsonToFile(`con${state.convId}.json`,CONV_PATH, jsonContent)
 
     return {
         convId: state.convId + 1,
