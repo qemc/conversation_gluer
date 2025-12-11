@@ -1,11 +1,12 @@
 import { StateGraph, START, END, Annotation, messagesStateReducer, MemorySaver } from "@langchain/langgraph";
-import { ChatOpenAI } from "@langchain/openai";
+import { ChatOpenAI, convertReasoningSummaryToResponsesReasoningItem } from "@langchain/openai";
 import { Question } from "./types.js";
 import { make_router, system_user_prompt } from "./ai_utils/langchainHelpers.js";
 import { promises as fs } from "fs";
 import * as path from "path";
 import { Conversation, Data, JsonFileConv, saveCache } from "./types.js";
-
+import { z } from "zod"
+import { tool } from "@langchain/core/tools";
 
 const CONV_PATH = process.env['CONV_PATH'] as string;
 
@@ -20,6 +21,33 @@ const model_51 = new ChatOpenAI({
 const model_5_nano = new ChatOpenAI({
     model: 'gpt-5-nano'
 })
+
+const researchTool = tool(
+    async({query}) => {
+        console.log(query)
+    },
+    {
+        name: 'research_query',
+        description: 'Call this tool when you want to add more data and what currently is collected, is not sufficient to answer the question or follow the steps defined.',
+        schema: z.object({
+            query: z.string().describe('The specific information needed to be extracted from Vector Database')
+        })
+    }
+)
+
+const proccedTool = tool(
+    async({summary}) => {
+        console.log(summary)
+    },
+    {
+        name: 'proceed_further_tool',
+        description: 'Call this tool when you believe that all data needed to answer the question is collected and we are good to go further. Also call this tool, when you receive communication, that there is no more data related to this question.',
+        schema: z.object({
+            summary: z.string().describe('brief summary of why we do have all data necessary to answer the question')
+        })
+    }
+)
+
 
 const State = Annotation.Root({
     answerPlan: Annotation<string>,
@@ -119,6 +147,7 @@ async function extractInfoNode(state: typeof State.State){
     
         `
     )
+
     const oneShotItems = make_router(model_51, 'itemsToFocus', defineOneShotItems)
     const mainOneShot = make_router(model_51, 'result', mainPrompt)
 
@@ -130,6 +159,9 @@ async function extractInfoNode(state: typeof State.State){
     console.log(result)
     return{}
 }
+
+
+
 
 async function answerPlanNode(state: typeof State.State){
     
@@ -173,15 +205,50 @@ async function answerPlanNode(state: typeof State.State){
     }
 }
 
+const dataGetheringOutputStructure = z.object({
 
-async function dataGatherinNode(){
-    
+})
+
+async function dataGatheringNode(){
+
+    const tools = [researchTool, proccedTool]
+    const llm_with_tools = model_51.bindTools(tools)
+
+
     const prompt = system_user_prompt(
         `
-       
+        **Rola:**
+        Jesteś Audytorem Kompletności Danych (Data Completeness Auditor). Nie odpowiadasz bezpośrednio na pytania. Twoim jedynym zadaniem jest sterowanie przepływem (routing) poprzez wybór odpowiedniego narzędzia.
+
+        **Zadanie:**
+        Przeanalizuj dostarczone \`<pytanie>\` oraz \`<zebrany_kontekst>\` i podejmij jedną z dwóch decyzji:
+
+        **SCENARIUSZ 1: BRAKUJE DANYCH -> Użyj \`research_query\`**
+        Wybierz to narzędzie, jeśli:
+        - W kontekście brakuje kluczowych faktów (np. imion, dat, nazw endpointów).
+        - Pytanie wymaga akcji (np. "Wyślij hasło"), a Ty nie masz parametrów (nie znasz hasła lub URL).
+        - Potrzebujesz doprecyzować informacje.
+        
+        *Zasada dla Researchu:* Zapytanie w \`query\` musi być precyzyjne i celować w brakujący element (np. "adres endpointu API", "hasło użytkownika X").
+
+        **SCENARIUSZ 2: MAM KOMPLET DANYCH -> Użyj \`proceed_further_tool\`**
+        Wybierz to narzędzie, jeśli:
+        - Masz wszystkie fakty niezbędne do udzielenia odpowiedzi.
+        - Masz wszystkie parametry niezbędne do wykonania zlecenia (np. masz URL i Hasło, żeby wykonać request).
+        - Otrzymałeś informację, że w bazie nie ma więcej danych na ten temat (unikamy pętli).
+
+        **WAŻNE OGRANICZENIA:**
+        - Nie generuj zwykłego tekstu. MUSISZ wywołać jedno z narzędzi.
+        - Bądź surowy. Jeśli masz wątpliwości, czy dane są kompletne, wybierz \`research_query\`.
         `,
         `
+        <pytanie>
+        {question}
+        </pytanie>
 
+        <zebrany_kontekst>
+        {context}
+        </zebrany_kontekst>
         `
     )
 
