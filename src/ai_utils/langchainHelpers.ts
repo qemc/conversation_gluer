@@ -6,8 +6,9 @@ import { OpenAIEmbeddings } from "@langchain/openai";
 import { ChainIO } from "../types.js";
 import { QdrantClient } from "@qdrant/js-client-rest";
 import readline from "readline";
-import { BaseMessage } from "@langchain/core/messages";
-import { string } from "zod/v3";
+import { Runnable } from "@langchain/core/runnables";
+import { BaseLanguageModelInput } from "@langchain/core/language_models/base";
+import { AIMessage, BaseMessage } from "@langchain/core/messages";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 
 export function system_user_prompt(
@@ -47,7 +48,7 @@ export function LangChainOpenAImodel(
 
 export function make_router(
 
-    model: ChatOpenAI | ChatGoogleGenerativeAI, // model which will process the question
+    model: ChatOpenAI | ChatGoogleGenerativeAI | Runnable<BaseLanguageModelInput, BaseMessage>, // model which will process the question
     output_key: string, // the key under which the llm answer will be saved to the output
     prompt: ChatPromptTemplate // The prompt that will be used for that call
 ){
@@ -70,7 +71,8 @@ export function make_router(
           rawText = String(llm_response).trim()
         }
         
-        const hasToolCalls = (llm_response?.tool_calls?.length ?? 0) > 0;
+        const aiMsg = llm_response as AIMessage;
+        const hasToolCalls = (aiMsg?.tool_calls?.length ?? 0) > 0;
 
         if (!rawText && !hasToolCalls) {
             throw new Error(`Router error: Empty response.`);
@@ -78,8 +80,8 @@ export function make_router(
 
         let tokensUsed = 0;
         // Standard LangChain JS usage location
-        if (llm_response?.usage_metadata?.total_tokens) {
-            tokensUsed = llm_response.usage_metadata.total_tokens;
+        if (aiMsg?.usage_metadata?.total_tokens) {
+            tokensUsed = aiMsg.usage_metadata.total_tokens;
         }
 
         const prevTokens = Number(input.tokens_so_far) || 0;

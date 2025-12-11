@@ -12,10 +12,11 @@ type sentenceWindow = {
     isBoundaryCandidate?: boolean,
     distancePercentile?: number
 }
-type Chunk = {
+export type Chunk = {
     chunkId: string,
     chunkPositionInText: number,
     chunkText: string,
+    chunkEmbeddings: number[],
     chunkMetadata: Record<string,string | string[]>,
     chunkTokens: number
 }
@@ -47,9 +48,7 @@ export class SemanticChunker{
     }
     private async getSentecesWindow(sentences: string[]){
 
-
         let sentenceWindows: sentenceWindow[] = []
-
         for (let i = 0; i<sentences.length; i++){
             if(this.windowsSize> 0){
 
@@ -120,9 +119,9 @@ export class SemanticChunker{
                 }
             }
         }
-        for(let i = 0; i<sentenceWindows.length; i++){
-                console.log(sentenceWindows[i])
-            }
+        // for(let i = 0; i<sentenceWindows.length; i++){
+        //         console.log(sentenceWindows[i])
+        //     }
         return sentenceWindows
     }
     private async processSentenceWindows(text:string){
@@ -132,17 +131,18 @@ export class SemanticChunker{
 
         return windows
     }
+    // -----------------------------
     async chunkPercentile(
-        text: string,
+        text: string, // text to be chunked
         percentile: number,
-        metadata: Record<string,string | string[]>
+        metadata: Record<string,string | string[] | number>
     ): Promise<Chunk[]> {
 
     const sentenceWindows = await this.processSentenceWindows(text);
-    console.log(sentenceWindows);
+    // console.log(sentenceWindows);
 
     this.computePercentileRanks(sentenceWindows);
-    console.log(sentenceWindows);
+    // console.log(sentenceWindows);
 
     const chunks: Chunk[] = [];
     let currentChunkSentences: string[] = [];
@@ -150,13 +150,11 @@ export class SemanticChunker{
     for (let i = 0; i < sentenceWindows.length; i++) {
         const win = sentenceWindows[i];
 
-        // always add current sentence to the chunk
         currentChunkSentences.push(win.sentence);
 
         const dp = win.distancePercentile;
         const isLast = i === sentenceWindows.length - 1;
 
-        // boundary = percentile reached AND not last sentence
         const isBoundary = !isLast && dp !== undefined && dp >= percentile;
 
         if (isBoundary) {
@@ -165,6 +163,7 @@ export class SemanticChunker{
             chunkId: crypto.randomUUID(),
             chunkPositionInText: chunks.length + 1,
             chunkText: currentChunkSentences.join(" ").trim(),
+            chunkEmbeddings: await this.getEmbedding(currentChunkSentences.join(" ").trim()),
             chunkMetadata: metadata,
             chunkTokens: this.countTokens(currentChunkSentences.join(" ").trim()),
         } as Chunk
@@ -174,20 +173,19 @@ export class SemanticChunker{
         }
     }
 
-    // flush tail chunk (if anything left)
     if (currentChunkSentences.length > 0) {
 
         const chunk = {
             chunkId: crypto.randomUUID(),
             chunkPositionInText: chunks.length + 1,
             chunkText: currentChunkSentences.join(" ").trim(),
+            chunkEmbeddings: await this.getEmbedding(currentChunkSentences.join(" ").trim()),
             chunkMetadata: metadata,
             chunkTokens: this.countTokens(currentChunkSentences.join(" ").trim()),
         } as Chunk
 
         chunks.push(chunk);
     }
-    console.dir(chunks, { depth: null });
     return chunks;
     }
     async chunkPercentileMinMax(
@@ -205,13 +203,14 @@ export class SemanticChunker{
     let currentChunkSentences: string[] = [];
     let currentChunkTokens = 0;
 
-    const makeChunk = () => {
+    const makeChunk = async () => {
         const chunkText = currentChunkSentences.join(" ").trim();
 
         const chunk: Chunk = {
         chunkId: crypto.randomUUID(),
         chunkPositionInText: chunks.length + 1,
         chunkText,
+        chunkEmbeddings: await this.getEmbedding(chunkText),
         chunkMetadata: metadata,
         chunkTokens: currentChunkTokens || this.countTokens(chunkText),
         };
@@ -256,7 +255,6 @@ export class SemanticChunker{
         makeChunk();
     }
 
-    console.dir(chunks, { depth: null });
     return chunks;
     }
     async chunkMeanStd(
@@ -269,6 +267,8 @@ export class SemanticChunker{
     ){
         let sentences = this.processSentenceWindows(text)
     }
+
+
     private async getEmbedding(text:string): Promise<number[]>{
 
         if (!text || text.trim() === "") throw new Error("Empty text passed to getEmbedding()");

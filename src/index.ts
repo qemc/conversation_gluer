@@ -9,6 +9,7 @@ import { JsonOutputParser } from '@langchain/core/output_parsers';
 import { invokeAgent } from './langgraphAgent.js';
 import { number } from 'zod/v3';
 import { invokeMainAgent } from './mainAgent.js';
+import { uploadPreCalculatedChunks } from './ai_utils/loadChunkedFacts.js';
 
 
 const model_5nano = LangChainOpenAImodel();
@@ -43,6 +44,7 @@ async function process_converstaion_data(url: string):Promise<Data> {
 const url = fetch_env('AIDEVS_URL_ZAD51')
 // const processedConversations = await process_converstaion_data(url)
 
+const questionsUrl = fetch_env('AIDEVS_URL_ZAD51_QUESTIONS')
 async function getQuestions(url: string): Promise<Question[]>{
     const questions = await fetch_url(url);
     
@@ -52,7 +54,7 @@ async function getQuestions(url: string): Promise<Question[]>{
     })) 
     return questionList
 }
-const questionsUrl = fetch_env('AIDEVS_URL_ZAD51_QUESTIONS')
+
 const questions: Question[] = await getQuestions(questionsUrl)
 
 // The idea was to test how embeddings would work with completing the conversation. 
@@ -307,6 +309,9 @@ async function try_llm(
     }
 }
 
+
 //await invokeAgent(processedConversations)
 
-await invokeMainAgent(questions)
+// await invokeMainAgent(questions)
+
+await uploadPreCalculatedChunks('facts')
