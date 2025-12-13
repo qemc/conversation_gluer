@@ -70,7 +70,7 @@ export function make_router(
         else{
           rawText = String(llm_response).trim()
         }
-        
+
         const aiMsg = llm_response as AIMessage;
         const hasToolCalls = (aiMsg?.tool_calls?.length ?? 0) > 0;
 

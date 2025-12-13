@@ -312,6 +312,5 @@ async function try_llm(
 
 //await invokeAgent(processedConversations)
 
-// await invokeMainAgent(questions)
+await invokeMainAgent(questions)
 
-await uploadPreCalculatedChunks('facts')

@@ -7,37 +7,49 @@ import * as path from "path";
 import { Conversation, Data, JsonFileConv, saveCache } from "./types.js";
 import { z } from "zod"
 import { tool } from "@langchain/core/tools";
+import { QdrantClient } from "@qdrant/js-client-rest";
+import { get_embedding } from "./ai_utils/langchainHelpers.js";
+import { AIMessage, BaseMessage } from "@langchain/core/messages";
+import * as readline from "node:readline/promises"
+import {stdin, stdout } from "node:process";
+
 
 const CONV_PATH = process.env['CONV_PATH'] as string;
+const QDRANT_COLLECTION = process.env['QDRANT_COLLECTION'] as string;
 
+const qdrantClient = new QdrantClient({
+    url: process.env.QDRANT_URL,
+    apiKey: process.env.QDRANT_API_KEY,
+});
 const model_o3 = new ChatOpenAI({
     model: 'o3'
 })
-
 const model_51 = new ChatOpenAI({
     model: 'gpt-5.1'
 })
-
 const model_5_nano = new ChatOpenAI({
     model: 'gpt-5-nano'
 })
-
 const researchTool = tool(
     async({query}) => {
+        console.log('=========RESEARCH TOOL ARG=========')
         console.log(query)
+        console.log('===================================')    
     },
     {
         name: 'research_query',
-        description: 'Call this tool when you want to add more data and what currently is collected, is not sufficient to answer the question or follow the steps defined.',
+        description: 'Uzyj tego narzędzia, jeśli chcesz uzyskać dostęp do faktów, na temat osób / wydarzeń / lokacji wspomnianych w konwersacjach',
         schema: z.object({
-            query: z.string().describe('The specific information needed to be extracted from Vector Database')
+            query: z.string().describe('Naturaline powiązane informacje, z tym co jest potrzebne. Mogą być fragmenty konwersacji, poszczególne informacje. Uzyj naturalnego języka.')
         })
     }
 )
-
 const proccedTool = tool(
     async({summary}) => {
+        console.log('=========PROCEED TOOL ARG=========')
         console.log(summary)
+        console.log('===================================')
+
     },
     {
         name: 'proceed_further_tool',
@@ -47,7 +59,21 @@ const proccedTool = tool(
         })
     }
 )
+function formatAppendedData(currentData: string, dataToAppend:string, dataDescription: string){
+    
+    let joinedDataArray: string = 'Nie znaleniono nowych danych. Musisz przejść do proceed_further_tool'
 
+    if(dataToAppend.length > 0){
+        joinedDataArray = dataToAppend;
+    }
+
+    const combinedData = [currentData, joinedDataArray].join(`\n Odpowiedź z wektorowej bazy danych faktów: \n ${dataDescription}`)
+    return combinedData
+}
+
+function humandNode(state: typeof State.State){
+    return{}
+}
 
 const State = Annotation.Root({
     answerPlan: Annotation<string>,
@@ -56,7 +82,13 @@ const State = Annotation.Root({
     startInfo: Annotation<string>,
     allQuestions: Annotation<Question[]>,
     conversations: Annotation<JsonFileConv[]>,
-    currentContext: Annotation<string>
+    currentContext: Annotation<string>,
+    dataGatheringResponses: Annotation<BaseMessage[]>({
+        reducer: messagesStateReducer,
+        default: () => []
+    }),
+    isApproved: Annotation<boolean>
+    
 })
 
 
@@ -65,47 +97,44 @@ async function answerPlanNode(state: typeof State.State){
     const prompt = system_user_prompt(
     `
     **Rola:**
-    Jesteś Architektem Rozwiązywania Problemów (Problem Solving Architect). Twoim zadaniem jest przeanalizowanie pytania użytkownika i stworzenie precyzyjnego planu działania, który zostanie wykonany przez Agenta wyposażonego w konkretne narzędzia.
-
-    **Dostępne Narzędzia Agenta:**
-    Twój wykonawca (Agent) posiada następujące możliwości w etapie zbierania wiedzy:
-    1. \`research_query\`: Narzędzie do przeszukiwania bazy wektorowej (wiedzy/dokumentacji). Używane do znajdowania faktów, haseł, URL-i, imion itp.
-    2. \`proceed_further_tool\`: Narzędzie sygnalizujące, że zgromadzono już komplet informacji i można przejść do właściwej odpowiedzi lub akcji.
+    Jesteś Definiatorem Celu (Goal Definer).
+    Twoim jedynym zadaniem jest przeczytanie pytania i napisanie **jednego, prostego zdania** opisującego, co dokładnie ma być wynikiem.
 
     **Zadanie:**
-    Dla każdego pytania wygeneruj wyjście składające się z dwóch sekcji:
+    Zignoruj całą otoczkę pytania ("znajdź", "powiedz mi", "czy wiesz").
+    Skup się na rzeczowniku/obiekcie, który jest odpowiedzią. Opisz go precyzyjnie.
 
-    1. **Oczekiwany format:** Precyzyjny opis tego, jak ma wyglądać ostateczna odpowiedź (np. "Czysty ciąg znaków URL", "Obiekt JSON").
-    2. **Kroki do podjęcia:** Lista ponumerowanych, atomowych czynności.
+    **Przykłady:**
+    Pytanie: "Jeden z rozmówców skłamał podczas rozmowy. Kto to był?"
+    Odpowiedź: Imię lub nazwisko osoby, która minęła się z prawdą.
 
-    **Zasady tworzenia kroków:**
-    - **Mapowanie na Narzędzia:** Każdy krok wymagający zdobycia nowej informacji musi implikować użycie narzędzia \`research_query\`. Sformułuj to jasno, np. "Użyj research_query, aby znaleźć hasło...".
-    - **Rozbijaj zależności:** Nie możesz "wysłać hasła", jeśli go nie masz. Najpierw zaplanuj krok znalezienia hasła (research), potem krok znalezienia adresu (research), a na końcu krok wykonania akcji.
-    - **Logika i Weryfikacja:** Jeśli pytanie jest podchwytliwe (np. "kto nie kłamał"), dodaj krok analizy logicznej zebranych danych przed ostateczną odpowiedzią.
+    Pytanie: "Jaki jest prawdziwy endpoint do API podany przez osobę, która NIE skłamała?"
+    Odpowiedź: Dokładny adres URL endpointu API.
 
-    **Format Wyjściowy:**
-    Zwróć odpowiedź w ściśle określonym formacie:
+    Pytanie: "Jakim przezwiskiem określany jest chłopak Barbary?"
+    Odpowiedź: Przezwisko chłopaka Barbary.
 
-    Oczekiwany format:
-    [Opis formatu]
+    Pytanie: "Co zwraca API po wysłaniu hasła?"
+    Odpowiedź: Treść odpowiedzi zwróconej przez API.
 
-    Kroki do podjęcia:
-    1. [Krok pierwszy - zazwyczaj research]
-    2. [Krok drugi - research/analiza]
-    ...
+    **Ograniczenia:**
+    - Odpisz tylko tym jednym zdaniem. Bez cudzysłowów, bez JSON-a, bez wstępów.
+    - Używaj języka polskiego.
     `,
     `
-    Pytanie do analizy:
-    {question}
+    Pytanie: {question}
     `
 )
        
     const chain = make_router(model_51, 'result', prompt)
+
     const result = await chain.invoke({
         question: state.allQuestions[state.questionId].question
     })
 
-    console.log(result.api_response.content)
+    console.log('=======ANSWER PLAN NODE=======')
+    console.dir(result, { depth: null, colors: true });
+    console.log('==============================')
 
     return{
         answerPlan: result.api_response.content
@@ -114,44 +143,51 @@ async function answerPlanNode(state: typeof State.State){
 
 async function dataGatheringNode(state: typeof State.State){
 
-    const tools = [researchTool, proccedTool]
-    const llm_with_tools = model_51.bindTools(tools)
-
-
     const prompt = system_user_prompt(
         `
         **Rola:**
-        Jesteś Audytorem Kompletności Danych (Data Completeness Auditor). Nie odpowiadasz bezpośrednio na pytania. Twoim jedynym zadaniem jest sterowanie przepływem (routing) poprzez wybór odpowiedniego narzędzia.
+        Jesteś Weryfikatorem Celu (Target Verifier). Twoim zadaniem jest sprawdzenie, czy udało się już znaleźć konkretną informację zdefiniowaną w polu \`<cel_odpowiedzi>\`.
+
+        **Kontekst Danych (Co czytasz?):**
+        Otrzymujesz \`<zebrany_kontekst>\`, który składa się z dwóch warstw:
+        1. **Konwersacje:** Zapisy rozmów ludzi. PAMIĘTAJ: Ludzie kłamią, mylą się i konfabulują. To nie są fakty.
+        2. **Fakty (Baza Wektorowa):** Informacje, które już pobrałeś narzędziem \`research_query\`. To jest Twoje jedyne źródło prawdy.
+
+        **Mapa Twojej Wiedzy (Gdzie szukać, jeśli brakuje danych?):**
+        Baza faktów zawiera raporty i akta dotyczące:
+        1. **Ludzi:** Profile psychologiczne, historie zatrudnienia, powiązania (np. Ragowski, Bomba, Azazel).
+        2. **Miejsc:** Opisy techniczne sektorów fabryki (C, D), magazynów, zabezpieczeń.
+        3. **Zdarzeń:** Raporty z incydentów, ucieczek i działań ruchu oporu.
 
         **Zadanie:**
-        Przeanalizuj dostarczone \`<pytanie>\`,  \`<zebrany_kontekst>\` oraz \`<plan>\` i podejmij jedną z dwóch decyzji:
+        Porównaj \`<cel_odpowiedzi>\` (to, co musisz znaleźć) z \`<zebrany_kontekst>\` (to, co masz).
 
-        **SCENARIUSZ 1: BRAKUJE DANYCH -> Użyj \`research_query\`**
+        **SCENARIUSZ 1: CEL NIEOSIĄGNIĘTY -> Użyj \`research_query\`**
         Wybierz to narzędzie, jeśli:
-        - W kontekście brakuje kluczowych faktów (np. imion, dat, nazw endpointów).
-        - Pytanie wymaga akcji (np. "Wyślij hasło"), a Ty nie masz parametrów (nie znasz hasła lub URL).
-        - Potrzebujesz doprecyzować informacje.
-        
-        *Zasada dla Researchu:* Zapytanie w \`query\` musi być precyzyjne i celować w brakujący element (np. "adres endpointu API", "hasło użytkownika X").
+        - W kontekście brakuje informacji opisanej w \`<cel_odpowiedzi>\`.
+        - Masz tylko poszlaki z rozmów (np. ktoś mówi "chyba jest w magazynie"), ale nie masz twardego faktu z bazy potwierdzającego, co jest w magazynie.
+        - \`<cel_odpowiedzi>\` wymaga konkretu (np. "dokładny adres URL"), a Ty masz tylko nazwę serwisu.
 
-        **SCENARIUSZ 2: MAM KOMPLET DANYCH -> Użyj \`proceed_further_tool\`**
+        *Zasada Researchu:* Wpisz w zapytanie słowa kluczowe związane z brakującym elementem celu (np. "Sektor C przeznaczenie", "Rafał Bomba choroba").
+
+        **SCENARIUSZ 2: CEL OSIĄGNIĘTY -> Użyj \`proceed_further_tool\`**
         Wybierz to narzędzie, jeśli:
-        - Masz wszystkie fakty niezbędne do udzielenia odpowiedzi.
-        - Masz wszystkie parametry niezbędne do wykonania zlecenia (np. masz URL i Hasło, żeby wykonać request).
-        - Otrzymałeś informację, że w bazie nie ma więcej danych na ten temat (unikamy pętli).
+        - \`<zebrany_kontekst>\` zawiera precyzyjną odpowiedź na opis z \`<cel_odpowiedzi>\`.
+        - Masz pewność, że informacja pochodzi z wiarygodnego źródła (lub zweryfikowałeś kłamstwo rozmówcy faktami).
+        - Otrzymałeś informację systemową, że w bazie nie ma więcej danych.
 
         **WAŻNE OGRANICZENIA:**
         - Nie generuj zwykłego tekstu. MUSISZ wywołać jedno z narzędzi.
-        - Bądź surowy. Jeśli masz wątpliwości, czy dane są kompletne, wybierz \`research_query\`.
+        - Skup się wyłącznie na znalezieniu tego, co opisuje \`<cel_odpowiedzi>\`. Ignoruj poboczne wątki.
         `,
         `
         <pytanie>
         {question}
         </pytanie>
 
-        <plan>
-        {plan}
-        </plan>
+        <cel_odpowiedzi>
+        {plan} 
+        </cel_odpowiedzi>
 
         <zebrany_kontekst>
         {context}
@@ -159,96 +195,117 @@ async function dataGatheringNode(state: typeof State.State){
         `
     )
 
+    const tools = [researchTool, proccedTool]
+    const llm_with_tools = model_51.bindTools(tools)
+
     const chain = make_router(llm_with_tools, 'result', prompt)
-    const result = chain.invoke({
-        questions: state.allQuestions[state.questionId],
+
+    const result = await chain.invoke({
+        question: state.allQuestions[state.questionId],
         plan: state.answerPlan,
         context: state.currentContext
     })
 
-    return{}
+    console.log('=======DATA GATHERING NODE=======')
+    console.dir(result, { depth: null, colors: true });
+    console.log('=================================')
+    
+    return{
+        dataGatheringResponses: [result.api_response]    
+    }
+}
+
+async function qdrantResearchNode(state: typeof State.State) {
+    
+    const lastDataGatheringMessage = state.dataGatheringResponses[state.dataGatheringResponses.length - 1] as AIMessage;
+
+    if(!(lastDataGatheringMessage?.tool_calls?.length)){
+        throw new Error ('No tools have been called in qdrantResearchNode') 
+    }
+
+    const currentContext = state.currentContext
+    const llmQuery = lastDataGatheringMessage.tool_calls[0].args.query;
+
+    const vector = await get_embedding(llmQuery)
+    const qdrantResults = await qdrantClient.search(QDRANT_COLLECTION, {
+        vector: vector,
+        limit: 1,
+        with_payload: true
+    });
+
+    if(qdrantResults.length === 0){
+        return {
+            currentContext: formatAppendedData(currentContext, '', llmQuery)
+        }
+    }
+
+    const qdrantBesstMatchFactId = qdrantResults[0].payload?.factId;
+
+    const allFactPart = await qdrantClient.scroll(QDRANT_COLLECTION, {
+        filter: {
+            must:[
+                {
+                    key: 'factId',
+                    match: {
+                        value: qdrantBesstMatchFactId
+                    }
+                }
+            ]
+        },
+        limit: 100,
+        with_payload: true
+    });
+
+    const fullText = allFactPart.points
+      .sort((a: any, b: any) => (a.payload.position - b.payload.position)) // Optional: if you saved 'position'
+      .map(p => p.payload?.text)
+      .join("\n\n");
+
+    const newContext = formatAppendedData(currentContext, fullText, llmQuery)
+
+    console.log('=======QDRANT SEARCH NODE=======')
+    console.dir(newContext, { depth: null, colors: true });
+    console.log('================================')
+
+    return {
+        currentContext: newContext
+    }
 }
 
 // To do in the middle:
-// finish gathering node - in progress
-// proceed with Qdrant implementation 
+// finish gathering node - done
+// proceed with Qdrant implementation - done
 
-async function queryQdrantNode(){
-    
-    const prompt = system_user_prompt(
-        `
-        This node queries Vector DB based on the question, expected answer, and summary (?) TBD
-        `,
-        `
-        Am I able to answer this questions based on conversation? 
-        
-        `
-    )
-    return{}
+
+function dataGatheringRouter(state: typeof State.State){
+
+    const lastDataGatheringMessage = state.dataGatheringResponses[state.dataGatheringResponses.length - 1] as AIMessage
+
+    if(!(lastDataGatheringMessage?.tool_calls?.length)){
+        throw new Error('Error in data gathering router node. The Data Gathering node did not return a tool call.')
+    }
+    const toolName = lastDataGatheringMessage.tool_calls[0].name;
+
+    if(toolName === 'research_query'){
+        return 'research'
+    }
+    if(toolName === 'proceed_further_tool'){
+        return 'proceed'
+    }
+    throw new Error ('No matching tools have been called in dataGatheringNode')
+}
+
+function afterHumanRouter(state: typeof State.State){
+
+    if(state.isApproved){
+        return 'finish'
+    }
+    else{
+        return 'retry'
+    }
 }
 
 
-
-async function decideToolNode(){
-    
-    const prompt = system_user_prompt(
-        `
-        Based on the gathered knowledge, question and excpected answer, choose tool that needs to be invoked. Provide all necessay input data.  
-        `,
-        `
-        Am I able to answer this questions based on conversation? 
-        
-        `
-    )
-
-    return{}
-}
-
-
-async function playApiAgentNode(){
-    
-    const prompt = system_user_prompt(
-        `
-        Placeholder for API invokation Agent
-        Returns answer to be validated
-        `,
-        `        
-        `
-    )
-
-    return{}
-}
-
-
-async function researchNode(){
-    
-    const prompt = system_user_prompt(
-        `
-        Research Node to be here implemented, 
-        Returns answer to be validated
-        `,
-        `        
-        `
-    )
-
-    return{}
-}
-
-
-async function validateAnswerNode(){
-    
-    const prompt = system_user_prompt(
-        `
-        Validates the answer by calling validating API.
-        If the answer is correct, Agent proceeds further, 
-        If the answer is incorrect, Agent goes back to the beginning or to the answer assessment node. TBD
-        `,
-        `        
-        `
-    )
-
-    return{}
-}
 
 
 export async function invokeMainAgent(questions: Question[]) {
@@ -274,7 +331,9 @@ export async function invokeMainAgent(questions: Question[]) {
         conversations: conversations,
         currentContext: conversations.map((conv: JsonFileConv)=> {
             return `Numer rozmowy: ${conv.convId}\n ${conv.conversation.join('\n')}`
-        }).join('\n\n')
+        }).join('\n\n'),
+        dataGatheringResponses:[], 
+        isApproved: false
     }
     const config = { configurable: { thread_id: "cli-session-1" } };
     
@@ -283,18 +342,64 @@ export async function invokeMainAgent(questions: Question[]) {
 
     // graph definition
     const workflow = new StateGraph(State)
-        .addNode('extract', answerPlanNode)
-        .addEdge(START, 'extract')
-        .addEdge('extract',END)
+        .addNode('plan', answerPlanNode)
+        .addNode('qdrant', qdrantResearchNode)
+        .addNode('gather', dataGatheringNode)
+        .addNode('human', humandNode)
+        .addEdge(START, 'plan')
+        .addEdge('plan','gather')
+        .addConditionalEdges(
+            'gather',
+            dataGatheringRouter,
+            {
+               research: 'qdrant',
+               proceed: END // quick win - just answer the question :)
+            }
+        )
+        .addEdge('qdrant', 'human')
+        .addConditionalEdges(
+            'human',
+            afterHumanRouter,
+            {
+                finish: END,
+                retry: 'gather'
+            }
+        )
 
     const app = workflow.compile({
-        checkpointer
+        checkpointer,
+        interruptBefore: ['human']
     });
     await app.invoke(initialState, config)
 
+    const rl = readline.createInterface({ input: stdin, output: stdout });
 
-    console.log(conversations)
+    while(true){
+
+        const snapshot = await app.getState(config)
+                
+
+        if(snapshot.next.length === 0) break;
+
+        const answer = await rl.question("Approve? (y/n): ")
+
+        let approval: boolean = false
+
+        if(answer === 'y'){
+            approval = true
+        }
+        if(answer === 'q'){
+            break
+        }
+
+        await app.updateState(config, {
+            isApproved: approval
+        });
+
+        await app.invoke(null, config);
+    }
     console.log(questions)
+    rl.close();
 }
 
 
@@ -309,4 +414,6 @@ export async function invokeMainAgent(questions: Question[]) {
 // research node
 // answer validation node
 // admin task around Agent Invocation
+
+// To Do: 
 
