@@ -1,10 +1,10 @@
 import { StateGraph, START, END, Annotation, messagesStateReducer, MemorySaver } from "@langchain/langgraph";
 import { ChatOpenAI, convertReasoningSummaryToResponsesReasoningItem } from "@langchain/openai";
-import { Question } from "./types.js";
+import { Answer, Question } from "./types.js";
 import { make_router, system_user_prompt } from "./ai_utils/langchainHelpers.js";
 import { promises as fs } from "fs";
 import * as path from "path";
-import { Conversation, Data, JsonFileConv, saveCache } from "./types.js";
+import { Conversation, Data, JsonFileConv, ValidationPayload } from "./types.js";
 import { z } from "zod"
 import { tool } from "@langchain/core/tools";
 import { QdrantClient } from "@qdrant/js-client-rest";
@@ -12,10 +12,15 @@ import { get_embedding } from "./ai_utils/langchainHelpers.js";
 import { AIMessage, BaseMessage } from "@langchain/core/messages";
 import * as readline from "node:readline/promises"
 import {stdin, stdout } from "node:process";
+import { invokeApiAgent } from "./apiAgent.js";
+import { postPayload } from "./utils/utils.js";
 
 
 const CONV_PATH = process.env['CONV_PATH'] as string;
 const QDRANT_COLLECTION = process.env['QDRANT_COLLECTION'] as string;
+const AIDEVS_API_KEY = process.env['AIDEVS_API_KEY'] as string;
+const AIDEVS_REPORT_URL = process.env['AIDEVS_REPORT_URL'] as string;
+
 
 const qdrantClient = new QdrantClient({
     url: process.env.QDRANT_URL,
@@ -53,10 +58,21 @@ const proccedTool = tool(
     },
     {
         name: 'proceed_further_tool',
-        description: 'Call this tool when you believe that all data needed to answer the question is collected and we are good to go further. Also call this tool, when you receive communication, that there is no more data related to this question.',
+        description: 'Uzyj tego narzędzia, jeśli uwazasz, ze aktualnie zgromadzone dane są wystsarczające aby odpowiedzieć na podane pytanie. ',
         schema: z.object({
-            summary: z.string().describe('brief summary of why we do have all data necessary to answer the question')
+            summary: z.string().describe('Maksymalnie 2 zdaniowe uzasadnienie, dlaczego uwazasz, ze aktualnie zebrany kontekst jest wystarczający, aby przejść dalej')
         })
+    }
+)
+const apiAgentTool = tool (
+    async() =>{
+        console.log('=========PROCEED TOOL ARG=========')
+        console.log('Proceeding with ApiAgent')
+        console.log('===================================')
+    },
+    {
+        name:'api_agent_tool',
+        description: 'Uzyj tego narzędzia, jeśli uwazasz, ze zdobycie informacji potrzebnych do odpowiedzenia na pytanie wymaga wyslania zapytań do endpointu API'
     }
 )
 function formatAppendedData(currentData: string, dataToAppend:string, dataDescription: string){
@@ -67,28 +83,32 @@ function formatAppendedData(currentData: string, dataToAppend:string, dataDescri
         joinedDataArray = dataToAppend;
     }
 
-    const combinedData = [currentData, joinedDataArray].join(`\n Odpowiedź z wektorowej bazy danych faktów: \n ${dataDescription}`)
+    const combinedData = [currentData, joinedDataArray].join(`\n Odpowiedź z wektorowej bazy danych faktów na zapytanie: \n ${dataDescription} \n`)
     return combinedData
 }
-
 function humandNode(state: typeof State.State){
     return{}
 }
-
 const State = Annotation.Root({
     answerPlan: Annotation<string>,
     keptInfo: Annotation<string>,
     questionId: Annotation<number>,
     startInfo: Annotation<string>,
     allQuestions: Annotation<Question[]>,
+    allAnswers: Annotation<Answer[]>,
     conversations: Annotation<JsonFileConv[]>,
     currentContext: Annotation<string>,
     dataGatheringResponses: Annotation<BaseMessage[]>({
         reducer: messagesStateReducer,
         default: () => []
     }),
-    isApproved: Annotation<boolean>
-    
+    toolChoosingResponses: Annotation<BaseMessage[]>({
+        reducer: messagesStateReducer,
+        default: () => []
+    }),
+    isApproved: Annotation<boolean>,
+    validationPayload: Annotation<ValidationPayload>,
+    validationResult: Annotation<string>
 })
 
 
@@ -97,19 +117,17 @@ async function answerPlanNode(state: typeof State.State){
     const prompt = system_user_prompt(
     `
     **Rola:**
-    Jesteś Definiatorem Celu (Goal Definer).
-    Twoim jedynym zadaniem jest przeczytanie pytania i napisanie **jednego, prostego zdania** opisującego, co dokładnie ma być wynikiem.
+    Twoją rolą jest wyznaczanie odpowiedniego formatu odpowiedzi na podane pytanie. Podchodzisz chłodno do swojego zadania. Nie dodajesz zbędnych słów oraz komunikujesz wprost format odpowiedzi.
 
     **Zadanie:**
-    Zignoruj całą otoczkę pytania ("znajdź", "powiedz mi", "czy wiesz").
-    Skup się na rzeczowniku/obiekcie, który jest odpowiedzią. Opisz go precyzyjnie.
+    Na podstawie otrzymanego pytania oraz swojej generalnej wiedzy zwróć format, jaki powinna mieć odpowiedź na zadane pytanie, uznana za poprawną. Głęboko myśl nad poprawnym rozwiązaniem zadania. 
 
     **Przykłady:**
     Pytanie: "Jeden z rozmówców skłamał podczas rozmowy. Kto to był?"
-    Odpowiedź: Imię lub nazwisko osoby, która minęła się z prawdą.
+    Odpowiedź: Imię lub nazwisko osoby, która skłamała.
 
     Pytanie: "Jaki jest prawdziwy endpoint do API podany przez osobę, która NIE skłamała?"
-    Odpowiedź: Dokładny adres URL endpointu API.
+    Odpowiedź:  Adres URL endpointu API.
 
     Pytanie: "Jakim przezwiskiem określany jest chłopak Barbary?"
     Odpowiedź: Przezwisko chłopaka Barbary.
@@ -117,16 +135,35 @@ async function answerPlanNode(state: typeof State.State){
     Pytanie: "Co zwraca API po wysłaniu hasła?"
     Odpowiedź: Treść odpowiedzi zwróconej przez API.
 
-    **Ograniczenia:**
-    - Odpisz tylko tym jednym zdaniem. Bez cudzysłowów, bez JSON-a, bez wstępów.
-    - Używaj języka polskiego.
+    **Rola2:**
+    Twoją rolą jest anazliza swoich poprzenich działań.
+
+    **Zadanie2:**    
+    Po wyznaczeniu poprawnego formatu odpowiedzi, twoim zadaniem jest na jego podstawie przygotować podsumowanie w 1/2 zdaniach co musi być zrobione. Twoja odpowiedź zostanie przekazana do kolejnego modułu Agenta.
+
+    **Przykłady2:**
+    Pytanie: "Co odpowiada poprawny endpoint API po wysłaniu do niego hasła w polu "password" jako JSON?"
+    Format odpowiedzi: "Treść odpowiedzi zwróconej przez API."
+    Co nalezy wykonać: "Wysłać zapytanie do API z wpisanym hasłem w polu password."
+
+    Pytanie: "Jeden z rozmówców skłamał podczas rozmowy. Kto to był?"
+    Format odpowiedzi: "Imię lub nazwisko lub pseudonim osoby, która skłamała w konwersacji"
+    Co nalezy wykonać: "Zweryfikować prawdziwość konwersacji na podstawie danych w kontekście"
+
+    Pytanie: "Jakim przezwiskiem określany jest chłopak Barbary?"
+    Format odpowiedzi: "Przezwisko chłopaka Barbary."
+    Co nalezy wykonać: "Przeszukać podany kontekst w poszukiawniu odpowiedzi"
+    
+    **Format Twojej Odpowiedzi:**
+    Format odpowiedzi: **Format odpowiedzi**
+    Co należy wykonać: **Czynności do wykonania**
     `,
     `
     Pytanie: {question}
     `
 )
        
-    const chain = make_router(model_51, 'result', prompt)
+    const chain = make_router(model_5_nano, 'result', prompt)
 
     const result = await chain.invoke({
         question: state.allQuestions[state.questionId].question
@@ -146,49 +183,22 @@ async function dataGatheringNode(state: typeof State.State){
     const prompt = system_user_prompt(
         `
         **Rola:**
-        Jesteś Weryfikatorem Celu (Target Verifier). Twoim zadaniem jest sprawdzenie, czy udało się już znaleźć konkretną informację zdefiniowaną w polu \`<cel_odpowiedzi>\`.
-
-        **Kontekst Danych (Co czytasz?):**
-        Otrzymujesz \`<zebrany_kontekst>\`, który składa się z dwóch warstw:
-        1. **Konwersacje:** Zapisy rozmów ludzi. PAMIĘTAJ: Ludzie kłamią, mylą się i konfabulują. To nie są fakty.
-        2. **Fakty (Baza Wektorowa):** Informacje, które już pobrałeś narzędziem \`research_query\`. To jest Twoje jedyne źródło prawdy.
-
-        **Mapa Twojej Wiedzy (Gdzie szukać, jeśli brakuje danych?):**
-        Baza faktów zawiera raporty i akta dotyczące:
-        1. **Ludzi:** Profile psychologiczne, historie zatrudnienia, powiązania (np. Ragowski, Bomba, Azazel).
-        2. **Miejsc:** Opisy techniczne sektorów fabryki (C, D), magazynów, zabezpieczeń.
-        3. **Zdarzeń:** Raporty z incydentów, ucieczek i działań ruchu oporu.
+        Jesteś odpowiedzialny za weryfikację kompletności danych. Głęboko analizujesz otrzymane dane kontekście oraz w instrukcji systemowej aby poprawnie ocenić kompletność danych. 
 
         **Zadanie:**
-        Porównaj \`<cel_odpowiedzi>\` (to, co musisz znaleźć) z \`<zebrany_kontekst>\` (to, co masz).
+        Weryfkacja, czy aktualnie zgromadzone dane, są wystarczające aby odpowiedzieć na pytanie zgodnie z podanym formatem oraz czynnościami, które nalezy wykonać.
 
-        **SCENARIUSZ 1: CEL NIEOSIĄGNIĘTY -> Użyj \`research_query\`**
-        Wybierz to narzędzie, jeśli:
-        - W kontekście brakuje informacji opisanej w \`<cel_odpowiedzi>\`.
-        - Masz tylko poszlaki z rozmów (np. ktoś mówi "chyba jest w magazynie"), ale nie masz twardego faktu z bazy potwierdzającego, co jest w magazynie.
-        - \`<cel_odpowiedzi>\` wymaga konkretu (np. "dokładny adres URL"), a Ty masz tylko nazwę serwisu.
+        Kontekst w pierwszej iteracji zawiera tylko konwersacje. Jeśli w kontekście po 'Informacje zebrane z Faktów:' będzie tekst, to oznacza, ze nie jest to pierwsza iteracja, będą tam się znajdować dopisane dane z bazy wektorowej z faktami. 
 
-        *Zasada Researchu:* Wpisz w zapytanie słowa kluczowe związane z brakującym elementem celu (np. "Sektor C przeznaczenie", "Rafał Bomba choroba").
+        Konwersacje powinny być Twoim głównym źródłem informacji, jeśli jednak będzie brakowało informacji potrzebnych do wypełnienia zadania, wywołaj narzędzie: 'research_query', które dopisze do kontekstu wynik, dopasowany do zapytania podanego w argumencie wywołania narzędzia.
+        
+        Jeśli uznasz, ze aktualnie zgromadzone dane w polu <zebrany_kontekst> są wystarczające, aby poprawnie odpowiedzieć na pytanie w odpowiednim formacie oraz wykonać wszystkie potrzebne kroki aby odpowiedziec na pytanie wybierz narzędzie: 'proceed_further_tool'. W argumencie wywołania narzędzia podaj krótką odpowiedź na pytanie: 'dlaczego uwazasz, ze aktualnie zebrane dane są wystarczające aby odpowiedzieć na pytanie?'.         
 
-        **SCENARIUSZ 2: CEL OSIĄGNIĘTY -> Użyj \`proceed_further_tool\`**
-        Wybierz to narzędzie, jeśli:
-        - \`<zebrany_kontekst>\` zawiera precyzyjną odpowiedź na opis z \`<cel_odpowiedzi>\`.
-        - Masz pewność, że informacja pochodzi z wiarygodnego źródła (lub zweryfikowałeś kłamstwo rozmówcy faktami).
-        - Otrzymałeś informację systemową, że w bazie nie ma więcej danych.
+        Pytanie:{question}
+        {plan}
 
-        **WAŻNE OGRANICZENIA:**
-        - Nie generuj zwykłego tekstu. MUSISZ wywołać jedno z narzędzi.
-        - Skup się wyłącznie na znalezieniu tego, co opisuje \`<cel_odpowiedzi>\`. Ignoruj poboczne wątki.
         `,
         `
-        <pytanie>
-        {question}
-        </pytanie>
-
-        <cel_odpowiedzi>
-        {plan} 
-        </cel_odpowiedzi>
-
         <zebrany_kontekst>
         {context}
         </zebrany_kontekst>
@@ -196,9 +206,9 @@ async function dataGatheringNode(state: typeof State.State){
     )
 
     const tools = [researchTool, proccedTool]
-    const llm_with_tools = model_51.bindTools(tools)
+    const llmWithTools = model_5_nano.bindTools(tools)
 
-    const chain = make_router(llm_with_tools, 'result', prompt)
+    const chain = make_router(llmWithTools, 'result', prompt)
 
     const result = await chain.invoke({
         question: state.allQuestions[state.questionId],
@@ -272,40 +282,178 @@ async function qdrantResearchNode(state: typeof State.State) {
     }
 }
 
-// To do in the middle:
-// finish gathering node - done
-// proceed with Qdrant implementation - done
+async function toolChoosingNode(state: typeof State.State){
 
+    const prompt = system_user_prompt(
+        `
+            **Rola**
+            Jesteś odpowiedzialną osobą decyzyjną, która specjalizuje się w wyborze narzędzi dla Agentów AI. Głęboko zastanawiasz się nad poprawną odpowiedzią.
+
+            **Zadanie**
+            Na podstawie pytania, formy odpowiedzi oraz wymaganych czynności, wybierz odpowiednie narzędzie.
+            Jeśli odpowiedź na pytanie wymaga posiadania odpowiedzi z endpointu API, wybierz 'api_agent_tool'. Wtedy kontekst zostanie przekazany do Agenta, który sprawdzi wszystkie endpointy api się tam znajdzujące.
+            Jeśli odpowiedź na pytanie wymaga analizy konteksu oraz wyciągnięcia poprawnych wniosów. Wybierz tool o nazwie 'proceed_further_tool'. Wtedy kolejnym krokiem, będzie głęboki research na temat poprawnej odpowiedzi, który będzie opierać się na aktualnie zebranym konekście. 
+            Pytanie:{question}
+            {plan}
+
+            `,
+            `
+            <zebrany_kontekst>
+            {context}
+            </zebrany_kontekst>
+        `
+    )
+
+    const tools = [apiAgentTool, proccedTool]
+    const llmWithTools = model_5_nano.bindTools(tools)
+
+    const chain = make_router(llmWithTools, 'result', prompt)
+    const result = await chain.invoke({
+        question: state.allQuestions[state.questionId],
+        plan: state.answerPlan,
+        context: state.currentContext
+    })
+
+    return{
+        toolChoosingResponses: [result.api_response]
+    }
+}
+
+async function apiAgentNode(state: typeof State.State){
+
+    const prompt = system_user_prompt(
+        `
+            **Rola:**
+            Jesteś specialistą od odpowiadania na pytania na podstawie kontekstu. Głęgoko się zastanawiasz zanim zwrócisz odpowiedź. Jesteś zawsze bardzo dokładny. 
+
+            **Zadanie:**
+            Odpowiedz na załączone pytanie na podstawie kontekstu. Kontekstem są odpowiedzi z endpointów api w tagu <odpowiedzi>, w formacie JSON. Twoja odpowiedź powinna być zwięzła i krótka. UWAGA, odpowiedzi moze być kilka. Kazdy jest od siebie odzielony '------'. Pytania będą w większości dotyczyły jednego endpointa i z regułu tego, który zwrócił poprawną odpowiedź. 
+            Pytanie:{question}
+
+        `,
+        `
+            <odpowiedzi>
+            {answers}
+            </odpowiedzi>
+        `
+    )
+
+    const currentcontext = state.currentContext;
+    const processedApiRespones = await invokeApiAgent(currentcontext);
+    
+    const question = state.allQuestions[state.questionId]
+    const chain = make_router(model_5_nano, 'result', prompt)
+    const result = await chain.invoke({
+        question: question,
+        answers: processedApiRespones
+    })
+
+    const rawAnswer = result.result 
+    const answer: Answer = {
+        questionId: question.questionId,
+        question: question.question,
+        answer: rawAnswer
+    }
+    return{
+        allAnswers: [...state.allAnswers, answer]
+    }
+}
+
+async function answerNode(state: typeof State.State){
+    const prompt = system_user_prompt(
+        `
+            **Rola:**
+            Jesteś zaawansowanym analitykiem tekstowym wyspecjalizowanym w odpowiadaniu na pytania dotyczące kontekstu. Myślisz głęboko oraz wypisujesz sobie kolejne etapy do przejścia.
+
+            **Zadanie:**
+            Odpowiedz na pytanie na podstawie podanego kontekstu w polu <kontekst>
+
+            Pytanie: {question}
+            {plan}
+        `,
+        `
+            <kontekst>
+            {context}
+            </kontekst>
+        `
+    )
+
+    const question = state.allQuestions[state.questionId];
+
+    const chain = make_router(model_5_nano, 'result', prompt)
+    const result = await chain.invoke({
+        question: question,
+        plan: state.answerPlan,
+        context: state.currentContext
+    })
+
+    const answer: Answer = {
+        questionId: question.questionId,
+        question:question.question,
+        answer: result.result
+    }
+
+    return{
+        allAnswers: [...state.allAnswers, answer]
+    }
+
+}
+
+async function validateAnswerNode(state: typeof State.State) {
+
+    const validationPayload = state.validationPayload;
+    const validationPayloadAnswers = validationPayload.answer;
+
+    for(let i = state.allAnswers.length - 1; i < state.allQuestions.length; i++){
+        
+        const toBeFilled = state.allAnswers[i]?.answer ?? 'null'
+        const index = (i+1).toString().padStart(2, '0')
+        validationPayloadAnswers[index] = toBeFilled;
+    }
+    
+    validationPayload.answer = validationPayloadAnswers
+
+    const validationAnswer = await postPayload<ValidationPayload>(
+        validationPayload, 
+        AIDEVS_REPORT_URL
+    );
+
+    console.log(validationAnswer)
+    return{
+        validationPayload: validationPayload,
+        validationResult: validationAnswer
+    }
+}
+
+function toolChoosingRouter(state: typeof State.State){
+
+    const lastToolChoosingMessage = state.toolChoosingResponses[state.toolChoosingResponses.length - 1] as AIMessage
+
+    if(!(lastToolChoosingMessage?.tool_calls?.length)) throw new Error('Error in data gathering router node. The Data Gathering node did not return a tool call.')
+
+    const toolName = lastToolChoosingMessage.tool_calls[0].name;
+
+    if(toolName === 'api_agent_tool')return 'agent'
+    if(toolName === 'proceed_further_tool')return 'proceed'
+    throw new Error ('No matching tools have been called in dataGatheringNode')
+}
 
 function dataGatheringRouter(state: typeof State.State){
 
     const lastDataGatheringMessage = state.dataGatheringResponses[state.dataGatheringResponses.length - 1] as AIMessage
 
-    if(!(lastDataGatheringMessage?.tool_calls?.length)){
-        throw new Error('Error in data gathering router node. The Data Gathering node did not return a tool call.')
-    }
+    if(!(lastDataGatheringMessage?.tool_calls?.length)) throw new Error('Error in data gathering router node. The Data Gathering node did not return a tool call.')
+    
     const toolName = lastDataGatheringMessage.tool_calls[0].name;
 
-    if(toolName === 'research_query'){
-        return 'research'
-    }
-    if(toolName === 'proceed_further_tool'){
-        return 'proceed'
-    }
+    if(toolName === 'research_query') return 'research'
+    if(toolName === 'proceed_further_tool')return 'proceed'
     throw new Error ('No matching tools have been called in dataGatheringNode')
 }
 
 function afterHumanRouter(state: typeof State.State){
-
-    if(state.isApproved){
-        return 'finish'
-    }
-    else{
-        return 'retry'
-    }
+    return state.isApproved ? 'finish' : 'retry';
 }
-
-
 
 
 export async function invokeMainAgent(questions: Question[]) {
@@ -322,6 +470,12 @@ export async function invokeMainAgent(questions: Question[]) {
         }
     }
 
+    const validationPayload: ValidationPayload = {
+        task:'phone',
+        apikey: AIDEVS_API_KEY,
+        answer:{}
+    }
+
     const initialState: typeof State.State = {
         answerPlan: '',
         keptInfo: '',
@@ -331,9 +485,13 @@ export async function invokeMainAgent(questions: Question[]) {
         conversations: conversations,
         currentContext: conversations.map((conv: JsonFileConv)=> {
             return `Numer rozmowy: ${conv.convId}\n ${conv.conversation.join('\n')}`
-        }).join('\n\n'),
+        }).join('\n\n') + '\n\nInformacje zebrane z Faktów: ',
         dataGatheringResponses:[], 
-        isApproved: false
+        toolChoosingResponses:[],
+        allAnswers: [],
+        isApproved: false,
+        validationPayload: validationPayload, 
+        validationResult: ''
     }
     const config = { configurable: { thread_id: "cli-session-1" } };
     
@@ -345,7 +503,11 @@ export async function invokeMainAgent(questions: Question[]) {
         .addNode('plan', answerPlanNode)
         .addNode('qdrant', qdrantResearchNode)
         .addNode('gather', dataGatheringNode)
+        .addNode('choose', toolChoosingNode)
         .addNode('human', humandNode)
+        .addNode('api', apiAgentNode)
+        .addNode('answer', answerNode)
+        .addNode('validate', validateAnswerNode)
         .addEdge(START, 'plan')
         .addEdge('plan','gather')
         .addConditionalEdges(
@@ -353,18 +515,30 @@ export async function invokeMainAgent(questions: Question[]) {
             dataGatheringRouter,
             {
                research: 'qdrant',
-               proceed: END // quick win - just answer the question :)
+               proceed: 'choose' 
             }
         )
+        .addConditionalEdges(
+            'choose',
+            toolChoosingRouter,
+            {
+                agent: 'api',
+                proceed: 'answer'
+            }
+        )
+        .addEdge('api', 'validate')
+        .addEdge('answer', 'validate')
         .addEdge('qdrant', 'human')
         .addConditionalEdges(
             'human',
             afterHumanRouter,
             {
-                finish: END,
-                retry: 'gather'
+                finish: 'gather',
+                retry: END
             }
         )
+        .addEdge('validate', END)
+
 
     const app = workflow.compile({
         checkpointer,
@@ -381,21 +555,15 @@ export async function invokeMainAgent(questions: Question[]) {
 
         if(snapshot.next.length === 0) break;
 
-        const answer = await rl.question("Approve? (y/n): ")
-
+        const answer = await rl.question("Continue? (y/n): ")
         let approval: boolean = false
 
-        if(answer === 'y'){
-            approval = true
-        }
-        if(answer === 'q'){
-            break
-        }
-
+        if(answer === 'y') approval = true;
+        if(answer === 'q') break;
+        
         await app.updateState(config, {
             isApproved: approval
         });
-
         await app.invoke(null, config);
     }
     console.log(questions)
@@ -405,14 +573,14 @@ export async function invokeMainAgent(questions: Question[]) {
 
 // To do:
 // implement other nodes:
-// answerPlan - in progress
-// data collection node 
-// vector db implementation + chunking
-// vector db retrieval node
-// tool calling node
-// sub agent API caller
-// research node
-// answer validation node
+// answerPlan - done
+// data collection node - done
+// vector db implementation + chunking - done
+// vector db retrieval node - done
+// tool calling node - done
+// sub agent API caller - done
+// research node - done (prompt to be adjusted)
+// answer validation node 
 // admin task around Agent Invocation
 
 // To Do: 

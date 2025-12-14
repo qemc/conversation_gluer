@@ -359,7 +359,7 @@ export async function invokeAgent(data: Data){
 
         await app.invoke(null, config);
     }
-    rl.close();
+    
 }
 
 // TO DO:

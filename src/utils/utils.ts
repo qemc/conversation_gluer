@@ -1,5 +1,6 @@
 import { promises as fs } from "fs";
 import * as path from 'path';
+import axios from 'axios'
 
 export async function fetch_url(url: string){
 
@@ -81,5 +82,16 @@ export async function saveJsonToFile(
 
   await fs.writeFile(fullPath, jsonContent, 'utf-8');
   console.log(`Saved data to ${fullPath}`);
-  
+}
+
+export async function postPayload<Payload>(payload: Payload, url: string){
+  try {
+    // Axios automatically stringifies body and sets headers
+    const { data } = await axios.post<Payload>(url, payload);
+    console.log(data)
+    return data
+
+  } catch (error) {
+    console.error(error);
+  }
 }

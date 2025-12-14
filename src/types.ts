@@ -45,6 +45,20 @@ export type saveCache = {
     usedParts: string[]
 }
 
+// ID is needed to send answer to API
 export type Question = {
+    questionId: number,
     question: string
 }
+
+export type Answer = Question & {
+    answer: string
+}
+
+export type ValidationPayload = {
+    task: 'phone',
+    apikey: string,
+    answer: Record<string,string>
+}
+
+
