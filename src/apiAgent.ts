@@ -2,6 +2,10 @@ import { StateGraph, START, END, Annotation, messagesStateReducer, MemorySaver }
 import { ChatOpenAI } from "@langchain/openai";
 import { make_router, system_user_prompt } from "./ai_utils/langchainHelpers.js";
 import {postPayload } from "./utils/utils.js";
+import { Response } from "./types.js";
+import { Console } from "node:console";
+
+
 
 
 const model = new ChatOpenAI({
@@ -34,8 +38,9 @@ async function getPasswordNode(state: typeof State.State){
         const result = await chain.invoke({
             context: state.context
         })
+        console.log('=======PASSWORD NODE - API AGENT=======')
+        console.log(result.api_response.content)
 
-        console.log(result?.result)
         if(!result?.result) throw new Error('Password was not found')
 
         return{
@@ -50,6 +55,9 @@ function getEndpointsNode(state: typeof State.State){
 
     const finalEndpointList =  [...new Set(rawMatches.map(url => url.replace(/[.,;:]+$/, '')))];
 
+    console.log('=======ENDPOINT NODE - API AGENT=======')
+    console.dir(finalEndpointList, { depth: null, colors: true })
+
     return {
         endpoints: finalEndpointList
     }
@@ -59,14 +67,19 @@ function getEndpointsNode(state: typeof State.State){
 async function tryEndpiointNode(state: typeof State.State){
 
     const payload: Record<string, string> = {password: state.password} 
-    const apiResponses: any[] = []
+    const apiResponses: Response[] = []
 
     for (let x = 0; x < state.endpoints.length; x++){
         const endpoint = state.endpoints[x];
-        const response = await postPayload<Record<string, string> >(payload, endpoint)
+        const response = await postPayload<Record<string, string>, Response>(payload, endpoint)
 
-        apiResponses.push(JSON.stringify(response))
+        if(!response) throw new Error('API Agent Error, response undefined')
+        apiResponses.push(response)
     }
+    console.log('=======TRY ENDPOINT NODE - API AGENT=======')
+    console.dir(apiResponses, { depth: null, colors: true })
+
+
     return{
         apiResponses: apiResponses
     }
@@ -89,12 +102,12 @@ export async function invokeApiAgent(data: string){
     const checkpointer = new MemorySaver();
     // graph definition
     const workflow = new StateGraph(State)
-        .addNode('password', getPasswordNode)
+        .addNode('pswd', getPasswordNode)
         .addNode('endpoints', getEndpointsNode)
         .addNode('execute', tryEndpiointNode)
-        .addEdge(START, 'password')
+        .addEdge(START, 'pswd')
         .addEdge(START, 'endpoints')
-        .addEdge('password', 'execute')
+        .addEdge('pswd', 'execute')
         .addEdge('endpoints', 'execute')
         .addEdge('execute', END)
         
@@ -104,5 +117,6 @@ export async function invokeApiAgent(data: string){
     });
     // app invokation
     const finalState = await app.invoke(initialState, config)
-    return finalState.apiResponses.join('\n------\n') as string
+
+    return finalState.apiResponses
 }

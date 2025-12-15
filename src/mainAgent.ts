@@ -4,8 +4,8 @@ import { Answer, Question } from "./types.js";
 import { make_router, system_user_prompt } from "./ai_utils/langchainHelpers.js";
 import { promises as fs } from "fs";
 import * as path from "path";
-import { Conversation, Data, JsonFileConv, ValidationPayload } from "./types.js";
-import { z } from "zod"
+import { Response,JsonFileConv, ValidationPayload } from "./types.js";
+import { success, z } from "zod"
 import { tool } from "@langchain/core/tools";
 import { QdrantClient } from "@qdrant/js-client-rest";
 import { get_embedding } from "./ai_utils/langchainHelpers.js";
@@ -13,13 +13,15 @@ import { AIMessage, BaseMessage } from "@langchain/core/messages";
 import * as readline from "node:readline/promises"
 import {stdin, stdout } from "node:process";
 import { invokeApiAgent } from "./apiAgent.js";
-import { postPayload } from "./utils/utils.js";
+import { postPayload, extractQuestionId } from "./utils/utils.js";
+import { finished } from "node:stream";
 
 
 const CONV_PATH = process.env['CONV_PATH'] as string;
 const QDRANT_COLLECTION = process.env['QDRANT_COLLECTION'] as string;
 const AIDEVS_API_KEY = process.env['AIDEVS_API_KEY'] as string;
 const AIDEVS_REPORT_URL = process.env['AIDEVS_REPORT_URL'] as string;
+
 
 
 const qdrantClient = new QdrantClient({
@@ -33,7 +35,7 @@ const model_51 = new ChatOpenAI({
     model: 'gpt-5.1'
 })
 const model_5_nano = new ChatOpenAI({
-    model: 'gpt-5-nano'
+    model: 'gpt-5.1'
 })
 const researchTool = tool(
     async({query}) => {
@@ -108,7 +110,10 @@ const State = Annotation.Root({
     }),
     isApproved: Annotation<boolean>,
     validationPayload: Annotation<ValidationPayload>,
-    validationResult: Annotation<string>
+    validationResult: Annotation<Response>,
+    apiResponses: Annotation<Response[]>,
+    currentApiCall: Annotation<number>, // reset on new iteration
+    alreadyQueriedFacts: Annotation<number[]>
 })
 
 
@@ -148,7 +153,7 @@ async function answerPlanNode(state: typeof State.State){
 
     Pytanie: "Jeden z rozmówców skłamał podczas rozmowy. Kto to był?"
     Format odpowiedzi: "Imię lub nazwisko lub pseudonim osoby, która skłamała w konwersacji"
-    Co nalezy wykonać: "Zweryfikować prawdziwość konwersacji na podstawie danych w kontekście"
+    Co nalezy wykonać: "Na podstawie konwersacji oraz danych w kontekście zidentyfikować osobę, która kłamała"
 
     Pytanie: "Jakim przezwiskiem określany jest chłopak Barbary?"
     Format odpowiedzi: "Przezwisko chłopaka Barbary."
@@ -170,8 +175,8 @@ async function answerPlanNode(state: typeof State.State){
     })
 
     console.log('=======ANSWER PLAN NODE=======')
-    console.dir(result, { depth: null, colors: true });
-    console.log('==============================')
+    console.dir(result.api_response.content, { depth: null, colors: true });
+    
 
     return{
         answerPlan: result.api_response.content
@@ -188,9 +193,11 @@ async function dataGatheringNode(state: typeof State.State){
         **Zadanie:**
         Weryfkacja, czy aktualnie zgromadzone dane, są wystarczające aby odpowiedzieć na pytanie zgodnie z podanym formatem oraz czynnościami, które nalezy wykonać.
 
+        Zidentyfikuj imiona kazdego z rozmówców. Jeśli w konwersacji pojawia się agentka, musisz znaleźć jej imię. 
+
         Kontekst w pierwszej iteracji zawiera tylko konwersacje. Jeśli w kontekście po 'Informacje zebrane z Faktów:' będzie tekst, to oznacza, ze nie jest to pierwsza iteracja, będą tam się znajdować dopisane dane z bazy wektorowej z faktami. 
 
-        Konwersacje powinny być Twoim głównym źródłem informacji, jeśli jednak będzie brakowało informacji potrzebnych do wypełnienia zadania, wywołaj narzędzie: 'research_query', które dopisze do kontekstu wynik, dopasowany do zapytania podanego w argumencie wywołania narzędzia.
+        Konwersacje powinny być Twoim głównym źródłem informacji, jeśli jednak będzie brakowało informacji potrzebnych do wypełnienia zadania, wywołaj narzędzie: 'research_query', które dopisze do kontekstu wynik, dopasowany do zapytania podanego w argumencie wywołania narzędzia. Pamiętaj, ze fakty są przechowywane w bazie wektorowej. Twoje zapytanie powinno brać pod uwagę charakterystykę rozumienia 'wektorów'. To znaczy, ze baza zamieni Twoje zapytanie na wektory oraz zwróci dopasowaną odpowiedź. Postaraj się zawrzeć słowa klucz. 
         
         Jeśli uznasz, ze aktualnie zgromadzone dane w polu <zebrany_kontekst> są wystarczające, aby poprawnie odpowiedzieć na pytanie w odpowiednim formacie oraz wykonać wszystkie potrzebne kroki aby odpowiedziec na pytanie wybierz narzędzie: 'proceed_further_tool'. W argumencie wywołania narzędzia podaj krótką odpowiedź na pytanie: 'dlaczego uwazasz, ze aktualnie zebrane dane są wystarczające aby odpowiedzieć na pytanie?'.         
 
@@ -217,8 +224,7 @@ async function dataGatheringNode(state: typeof State.State){
     })
 
     console.log('=======DATA GATHERING NODE=======')
-    console.dir(result, { depth: null, colors: true });
-    console.log('=================================')
+    console.dir(result.api_response.tool_calls, { depth: null, colors: true });
     
     return{
         dataGatheringResponses: [result.api_response]    
@@ -249,9 +255,14 @@ async function qdrantResearchNode(state: typeof State.State) {
         }
     }
 
-    const qdrantBesstMatchFactId = qdrantResults[0].payload?.factId;
+    const qdrantBesstMatchFactId = (Number(qdrantResults[0].payload?.factId) ?? -1);
+    
+    let fullText = ''
+    const alreadyQueriedFacts = state.alreadyQueriedFacts;
 
-    const allFactPart = await qdrantClient.scroll(QDRANT_COLLECTION, {
+    if(!alreadyQueriedFacts.includes(qdrantBesstMatchFactId)){
+        
+        const allFactPart = await qdrantClient.scroll(QDRANT_COLLECTION, {
         filter: {
             must:[
                 {
@@ -264,18 +275,20 @@ async function qdrantResearchNode(state: typeof State.State) {
         },
         limit: 100,
         with_payload: true
-    });
+        });
 
-    const fullText = allFactPart.points
-      .sort((a: any, b: any) => (a.payload.position - b.payload.position)) // Optional: if you saved 'position'
-      .map(p => p.payload?.text)
-      .join("\n\n");
+        fullText = allFactPart.points
+            .sort((a: any, b: any) => (a.payload.position - b.payload.position)) // Optional: if you saved 'position'
+            .map(p => p.payload?.text)
+            .join("\n\n");
+
+        alreadyQueriedFacts.push(qdrantBesstMatchFactId);
+    }
 
     const newContext = formatAppendedData(currentContext, fullText, llmQuery)
 
     console.log('=======QDRANT SEARCH NODE=======')
     console.dir(newContext, { depth: null, colors: true });
-    console.log('================================')
 
     return {
         currentContext: newContext
@@ -313,7 +326,8 @@ async function toolChoosingNode(state: typeof State.State){
         plan: state.answerPlan,
         context: state.currentContext
     })
-
+    console.log('=======TOOL CHOOSING NODE=======')
+    console.dir(result.api_response.tool_calls, { depth: null, colors: true });
     return{
         toolChoosingResponses: [result.api_response]
     }
@@ -321,44 +335,31 @@ async function toolChoosingNode(state: typeof State.State){
 
 async function apiAgentNode(state: typeof State.State){
 
-    const prompt = system_user_prompt(
-        `
-            **Rola:**
-            Jesteś specialistą od odpowiadania na pytania na podstawie kontekstu. Głęgoko się zastanawiasz zanim zwrócisz odpowiedź. Jesteś zawsze bardzo dokładny. 
+    // look up for already collected responses (if it is not the first loop)
+    let apiResponses = state.apiResponses;
+    const question = state.allQuestions[state.questionId];
 
-            **Zadanie:**
-            Odpowiedz na załączone pytanie na podstawie kontekstu. Kontekstem są odpowiedzi z endpointów api w tagu <odpowiedzi>, w formacie JSON. Twoja odpowiedź powinna być zwięzła i krótka. UWAGA, odpowiedzi moze być kilka. Kazdy jest od siebie odzielony '------'. Pytania będą w większości dotyczyły jednego endpointa i z regułu tego, który zwrócił poprawną odpowiedź. 
-            Pytanie:{question}
-
-        `,
-        `
-            <odpowiedzi>
-            {answers}
-            </odpowiedzi>
-        `
-    )
-
-    const currentcontext = state.currentContext;
-    const processedApiRespones = await invokeApiAgent(currentcontext);
-    
-    const question = state.allQuestions[state.questionId]
-    const chain = make_router(model_5_nano, 'result', prompt)
-    const result = await chain.invoke({
-        question: question,
-        answers: processedApiRespones
-    })
-
-    const rawAnswer = result.result 
+    // if no responses (first loop) populate responses
+    if(apiResponses.length === 0){
+        apiResponses = await invokeApiAgent(state.currentContext);
+    }
+    // 
     const answer: Answer = {
         questionId: question.questionId,
         question: question.question,
-        answer: rawAnswer
+        answer: apiResponses[state.currentApiCall].message   
     }
+    const currentApiCall = state.currentApiCall + 1
+
+
     return{
-        allAnswers: [...state.allAnswers, answer]
+        allAnswers: [...state.allAnswers, answer],
+        apiResponses: apiResponses,
+        currentApiCall: currentApiCall
     }
 }
 
+// adjust prompt
 async function answerNode(state: typeof State.State){
     const prompt = system_user_prompt(
         `
@@ -366,14 +367,21 @@ async function answerNode(state: typeof State.State){
             Jesteś zaawansowanym analitykiem tekstowym wyspecjalizowanym w odpowiadaniu na pytania dotyczące kontekstu. Myślisz głęboko oraz wypisujesz sobie kolejne etapy do przejścia.
 
             **Zadanie:**
-            Odpowiedz na pytanie na podstawie podanego kontekstu w polu <kontekst>
-
+            Odpowiedz na pytanie na podstawie podanego kontekstu w polu <kontekst>, formatu odpowiedzi oraz kroków do wykonania. 
+            Zwracaj uwagę na fakty, i bierz pod uwagę kolejność konwersacji poniewaz tez jest kluczowa. Kolejność jest wskazana przez numer konwersacji. 
+            Zwróć równiez uwagę na elementy w tagu <Poprzednie pytania>. Są tam informacje, które mogą przydać się w kolejnych pytaniach.
+            Wypisz najwazniejsze elementy, które pomogą Tobie zidentyfikować prawidłową odpowiedź, zignoruj szum.
+            
             Pytanie: {question}
             {plan}
+
+            **Forma odpowiedzi**
+            Twoja odpowiedź powinna być mozliwie jak najkrótsza, bez zadnych udziwnień ani wyjaśnień. Potrzebuję tylko bezpośredniej odpowiedzi. 
         `,
         `
             <kontekst>
             {context}
+            Imię Agentki to Barbara!!!
             </kontekst>
         `
     )
@@ -392,7 +400,8 @@ async function answerNode(state: typeof State.State){
         question:question.question,
         answer: result.result
     }
-
+    console.log('=======ANSWER NODE =======')
+    console.dir(answer, { depth: null, colors: true })
     return{
         allAnswers: [...state.allAnswers, answer]
     }
@@ -413,15 +422,74 @@ async function validateAnswerNode(state: typeof State.State) {
     
     validationPayload.answer = validationPayloadAnswers
 
-    const validationAnswer = await postPayload<ValidationPayload>(
+    const validationAnswer = await postPayload<ValidationPayload, Response>(
         validationPayload, 
         AIDEVS_REPORT_URL
     );
+    console.log('=======VALIDATE ANSWER NODE =======')
+    console.dir(validationAnswer, { depth: null, colors: true })
 
-    console.log(validationAnswer)
     return{
         validationPayload: validationPayload,
         validationResult: validationAnswer
+    }
+}
+
+
+
+async function explainApiErrorNode(state: typeof State.State){
+
+    let currentApiCall = state.currentApiCall;
+    let apiResponses = state.apiResponses;
+    if (currentApiCall >= state.apiResponses.length) currentApiCall = 0, apiResponses = [];
+
+    return{
+        apiResponses: apiResponses,
+        currentApiCall: currentApiCall
+    }
+}
+
+
+async function explainErrorNode(state: typeof State.State){
+
+    const wrongAnswer = state.allAnswers[state.allAnswers.length - 1].answer;
+    const cleanAnswers = state.allAnswers.slice(0,-1);
+
+    const currentContext = state.conversations.map((conv: JsonFileConv)=> {
+        return `Numer rozmowy: ${conv.convId}\n ${conv.conversation.join('\n')}`
+    }).join('\n\n') + `Poprzednia błędna odpowiedź: ${wrongAnswer}, nie mozesz juz odpowiedzieć w ten sposób ` + 
+    '\n\nInformacje zebrane z Faktów: '
+
+    
+    return{
+        allAnswers: cleanAnswers,      
+        currentContext: currentContext,  
+        answerPlan: '', 
+        apiResponses: [],
+        currentApiCall: 0,
+        alreadyQueriedFacts: [],       
+        validationResult: { code: 600, message: '' }
+    }
+}
+
+async function formatCorrectAnswerNode(state: typeof State.State){
+
+    const previousAnswers = state.allAnswers.map((answer)=>{
+        `Poprzednie pytanie: ${answer.question}\n Odpowiedź na poprzednie pytanie: ${answer.answer}\n`
+    })
+    
+    const currentContext = state.conversations.map((conv: JsonFileConv)=> {
+            return `Numer rozmowy: ${conv.convId}\n ${conv.conversation.join('\n')}`
+        }).join('\n\n') + `<Poprzednie pytania> ${previousAnswers} </Poprzednie pytania>` + '\n\nInformacje zebrane z Faktów: '
+
+    return{
+        currentContext: currentContext,
+        apiResponses: [],
+        currentApiCall: 0,
+        alreadyQueriedFacts: [],
+        answerPlan: '',
+        questionId: state.questionId + 1,
+        validationResult: {code: 600, message:''}
     }
 }
 
@@ -454,7 +522,15 @@ function dataGatheringRouter(state: typeof State.State){
 function afterHumanRouter(state: typeof State.State){
     return state.isApproved ? 'finish' : 'retry';
 }
-
+function validationRouter(state: typeof State.State) {
+    
+    const responseQuestionId = Number((extractQuestionId(state.validationResult.message) ?? 0));
+    
+    if(state.allAnswers.length === state.allQuestions.length) return 'finish';
+    else if(state.allQuestions[state.questionId].questionId < responseQuestionId) return 'success';
+    else if(state.allQuestions[state.questionId].questionId === responseQuestionId && state.currentApiCall > 0)return 'retryApi';
+    else return 'retry';
+}
 
 export async function invokeMainAgent(questions: Question[]) {
 
@@ -491,9 +567,12 @@ export async function invokeMainAgent(questions: Question[]) {
         allAnswers: [],
         isApproved: false,
         validationPayload: validationPayload, 
-        validationResult: ''
+        validationResult: {code: 600, message:''},
+        apiResponses: [],
+        currentApiCall:0,
+        alreadyQueriedFacts:[]
     }
-    const config = { configurable: { thread_id: "cli-session-1" } };
+    const config = { configurable: { thread_id: "cli-session-1" }, recursionLimit: 100 };
     
     // checkpointer definition
     const checkpointer = new MemorySaver();
@@ -508,6 +587,9 @@ export async function invokeMainAgent(questions: Question[]) {
         .addNode('api', apiAgentNode)
         .addNode('answer', answerNode)
         .addNode('validate', validateAnswerNode)
+        .addNode('error', explainErrorNode)
+        .addNode('apiError', explainApiErrorNode)
+        .addNode('format', formatCorrectAnswerNode)
         .addEdge(START, 'plan')
         .addEdge('plan','gather')
         .addConditionalEdges(
@@ -537,22 +619,33 @@ export async function invokeMainAgent(questions: Question[]) {
                 retry: END
             }
         )
-        .addEdge('validate', END)
+        .addConditionalEdges(
+            'validate',
+            validationRouter,
+            {
+                finish: END,
+                success: 'format',
+                retryApi: 'apiError',
+                retry: 'error'
+            }
+        )
+        .addEdge('apiError', 'api')
+        .addEdge('format', 'plan')
+        .addEdge('error', 'plan')
 
 
     const app = workflow.compile({
         checkpointer,
         interruptBefore: ['human']
     });
-    await app.invoke(initialState, config)
+    let result = await app.invoke(initialState, config)
 
     const rl = readline.createInterface({ input: stdin, output: stdout });
 
     while(true){
 
         const snapshot = await app.getState(config)
-                
-
+            
         if(snapshot.next.length === 0) break;
 
         const answer = await rl.question("Continue? (y/n): ")
@@ -564,9 +657,10 @@ export async function invokeMainAgent(questions: Question[]) {
         await app.updateState(config, {
             isApproved: approval
         });
-        await app.invoke(null, config);
+        result = await app.invoke(null, config);
     }
     console.log(questions)
+    console.log(result)
     rl.close();
 }
 
@@ -579,9 +673,9 @@ export async function invokeMainAgent(questions: Question[]) {
 // vector db retrieval node - done
 // tool calling node - done
 // sub agent API caller - done
-// research node - done (prompt to be adjusted)
-// answer validation node 
-// admin task around Agent Invocation
+// research node - done 
+// answer validation node - done
+// admin task around Agent Invocation - done
 
 // To Do: 
-
+// 

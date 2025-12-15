@@ -1,6 +1,6 @@
 import 'dotenv/config';
-import { fetch_url, fetch_env, parse_json_to_array, saveToFile, normalize_to_compare } from './utils/utils.js';
-import { Conversation, Data, Part_embeddings, Part_cosine_similarity, ChainIO, ConvDetails, Question} from './types.js';
+import { fetch_url, fetch_env, parse_json_to_array, saveToFile, normalize_to_compare, postPayload } from './utils/utils.js';
+import { Conversation, Data, Part_embeddings, Part_cosine_similarity, ChainIO, ConvDetails, Question, ValidationPayload} from './types.js';
 import { cosineSimilarity } from '@langchain/core/utils/math';
 import { make_router, system_user_prompt, get_embedding, LangChainOpenAImodel, make_human_router } from './ai_utils/langchainHelpers.js';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
@@ -60,7 +60,7 @@ const questions: Question[] = await getQuestions(questionsUrl)
 // The idea was to test how embeddings would work with completing the conversation. 
 // It definietley did not fulfil the requirements. 
 // Although it was fun to test it. 
-async function try_embeddings(
+async function tryEmbeddings(
     url: string
 ){
     const data = await process_converstaion_data(url);
@@ -121,7 +121,7 @@ async function try_embeddings(
 // The input would be start and end of the conversation and the number of sentences. 
 // LLM would need to return sequenced array-like structure with chosen parts.
 // It would be crucial to remove them from array
-async function try_llm(
+async function tryLlm(
     url: string
 ){
     const data = await process_converstaion_data(url);
@@ -313,4 +313,29 @@ async function try_llm(
 //await invokeAgent(processedConversations)
 
 await invokeMainAgent(questions)
+
+
+
+// const payload = {
+
+//     task: 'phone',
+//     apikey: process.env['AIDEVS_API_KEY'],
+//     answer: {
+//         "01":"Samuel",
+//         "02":"Samuel",
+//         "03":"Samuel",
+//         "04":"Samuel",
+//         "05":"Samuel",
+//         "06":"Samuel",
+//     }
+
+// } as ValidationPayload
+
+// const url1 = process.env['AIDEVS_REPORT_URL'] as string
+
+// const url2 = 'https://rafal.ag3nts.org/b46c3'
+// const url3 = 'https://rafal.ag3nts.org/510bc'
+// const payload2 = {password: 'NONOMNISMORIAR'} 
+
+// await postPayload<Record<string,string>, Response>(payload2, url2)
 

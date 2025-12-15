@@ -1,4 +1,5 @@
 import { BaseMessage } from "@langchain/core/messages"
+import { string } from "zod/v3"
 
 export interface Conversation{
     start:string,
@@ -61,4 +62,9 @@ export type ValidationPayload = {
     answer: Record<string,string>
 }
 
+export type Response = {
+    code: number,
+    message: string,
+    hint?: string
+}
 

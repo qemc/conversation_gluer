@@ -84,14 +84,25 @@ export async function saveJsonToFile(
   console.log(`Saved data to ${fullPath}`);
 }
 
-export async function postPayload<Payload>(payload: Payload, url: string){
+export async function postPayload<Payload, Response>(
+  payload: Payload, 
+  url: string
+): Promise<Response | undefined> { 
   try {
-    // Axios automatically stringifies body and sets headers
-    const { data } = await axios.post<Payload>(url, payload);
-    console.log(data)
-    return data
-
+    const response = await axios.post<Response>(url, payload, {
+        validateStatus: (status) => status < 500
+    });
+    console.log(response.data)
+    return response.data;
   } catch (error) {
-    console.error(error);
+    // This only happens on Network Errors (no internet) or Server Crash (500)
+    console.error("CRITICAL NETWORK ERROR:", error);
+    return undefined;
   }
 }
+export function extractQuestionId(message: string): string | null {
+  const match = message.match(/question\s+(\d+)/i);
+  
+  return match ? match[1] : null;
+}
+
