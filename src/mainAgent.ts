@@ -45,9 +45,14 @@ const researchTool = tool(
     },
     {
         name: 'research_query',
-        description: 'Uzyj tego narzędzia, jeśli chcesz uzyskać dostęp do faktów, na temat osób / wydarzeń / lokacji wspomnianych w konwersacjach',
+        description: 'Służy do weryfikacji faktów w bazie wektorowej. Mechanizm wykorzystuje podobieństwo kosinusowe (cosine similarity), dlatego formułując zapytanie, skup się na ogólnym sensie i kontekście semantycznym poszukiwanej informacji, a nie tylko na słowach kluczowych.',
         schema: z.object({
-            query: z.string().describe('Naturaline powiązane informacje, z tym co jest potrzebne. Mogą być fragmenty konwersacji, poszczególne informacje. Uzyj naturalnego języka.')
+            query: z.string().describe(
+                'Szczegółowe zdanie lub pytanie w języku naturalnym opisujące poszukiwany fakt. ' +
+                'Zawrzyj w nim kluczowe imiona, nazwy miejsc i kontekst. ' +
+                'Nie używaj pojedynczych słów kluczowych; opisz semantycznie o co pytasz, ' +
+                'aby zmaksymalizować trafność dopasowania wektorowego.'
+            )
         })
     }
 )
@@ -113,7 +118,8 @@ const State = Annotation.Root({
     validationResult: Annotation<Response>,
     apiResponses: Annotation<Response[]>,
     currentApiCall: Annotation<number>, // reset on new iteration
-    alreadyQueriedFacts: Annotation<number[]>
+    alreadyQueriedFacts: Annotation<number[]>,
+    wrongAnswers: Annotation<string>
 })
 
 
@@ -211,12 +217,10 @@ async function dataGatheringNode(state: typeof State.State){
         </zebrany_kontekst>
         `
     )
-
     const tools = [researchTool, proccedTool]
     const llmWithTools = model_5_nano.bindTools(tools)
 
     const chain = make_router(llmWithTools, 'result', prompt)
-
     const result = await chain.invoke({
         question: state.allQuestions[state.questionId],
         plan: state.answerPlan,
@@ -351,6 +355,8 @@ async function apiAgentNode(state: typeof State.State){
     }
     const currentApiCall = state.currentApiCall + 1
 
+    console.log('=======AGENTAPI NODE =======')
+    console.dir(answer, { depth: null, colors: true })
 
     return{
         allAnswers: [...state.allAnswers, answer],
@@ -439,25 +445,32 @@ async function validateAnswerNode(state: typeof State.State) {
 
 async function explainApiErrorNode(state: typeof State.State){
 
+    const cleanAnswers = state.allAnswers.slice(0,-1);
     let currentApiCall = state.currentApiCall;
     let apiResponses = state.apiResponses;
     if (currentApiCall >= state.apiResponses.length) currentApiCall = 0, apiResponses = [];
 
     return{
         apiResponses: apiResponses,
-        currentApiCall: currentApiCall
+        currentApiCall: currentApiCall,
+        allAnswers: cleanAnswers
     }
 }
 
 
 async function explainErrorNode(state: typeof State.State){
 
-    const wrongAnswer = state.allAnswers[state.allAnswers.length - 1].answer;
+    const wrongAnswer = state.wrongAnswers + '\n' + state.allAnswers[state.allAnswers.length - 1].answer;
     const cleanAnswers = state.allAnswers.slice(0,-1);
+
+    const previousAnswers = state.allAnswers.map((answer)=>{
+        return `Poprzednie pytanie: ${answer.question}\n Odpowiedź na poprzednie pytanie: ${answer.answer}\n`
+    })
+    
 
     const currentContext = state.conversations.map((conv: JsonFileConv)=> {
         return `Numer rozmowy: ${conv.convId}\n ${conv.conversation.join('\n')}`
-    }).join('\n\n') + `Poprzednia błędna odpowiedź: ${wrongAnswer}, nie mozesz juz odpowiedzieć w ten sposób ` + 
+    }).join('\n\n') + `Błędna odpowiedzi na aktualne pytanie: ${wrongAnswer}, nie mozesz juz odpowiedzieć w ten sposób ` + `<Poprzednie pytania> ${previousAnswers} </Poprzednie pytania>` + 
     '\n\nInformacje zebrane z Faktów: '
 
     
@@ -468,14 +481,15 @@ async function explainErrorNode(state: typeof State.State){
         apiResponses: [],
         currentApiCall: 0,
         alreadyQueriedFacts: [],       
-        validationResult: { code: 600, message: '' }
+        validationResult: { code: 600, message: '' },
+        wrongAnswers: wrongAnswer
     }
 }
 
 async function formatCorrectAnswerNode(state: typeof State.State){
 
     const previousAnswers = state.allAnswers.map((answer)=>{
-        `Poprzednie pytanie: ${answer.question}\n Odpowiedź na poprzednie pytanie: ${answer.answer}\n`
+        return `Poprzednie pytanie: ${answer.question}\n Odpowiedź na poprzednie pytanie: ${answer.answer}\n`
     })
     
     const currentContext = state.conversations.map((conv: JsonFileConv)=> {
@@ -489,7 +503,8 @@ async function formatCorrectAnswerNode(state: typeof State.State){
         alreadyQueriedFacts: [],
         answerPlan: '',
         questionId: state.questionId + 1,
-        validationResult: {code: 600, message:''}
+        validationResult: {code: 600, message:''},
+        wrongAnswers:''
     }
 }
 
@@ -526,7 +541,7 @@ function validationRouter(state: typeof State.State) {
     
     const responseQuestionId = Number((extractQuestionId(state.validationResult.message) ?? 0));
     
-    if(state.allAnswers.length === state.allQuestions.length) return 'finish';
+    if(state.allAnswers.length === state.allQuestions.length && state.validationResult.code !== -350) return 'finish';
     else if(state.allQuestions[state.questionId].questionId < responseQuestionId) return 'success';
     else if(state.allQuestions[state.questionId].questionId === responseQuestionId && state.currentApiCall > 0)return 'retryApi';
     else return 'retry';
@@ -570,7 +585,8 @@ export async function invokeMainAgent(questions: Question[]) {
         validationResult: {code: 600, message:''},
         apiResponses: [],
         currentApiCall:0,
-        alreadyQueriedFacts:[]
+        alreadyQueriedFacts:[],
+        wrongAnswers: ''
     }
     const config = { configurable: { thread_id: "cli-session-1" }, recursionLimit: 100 };
     
@@ -641,6 +657,7 @@ export async function invokeMainAgent(questions: Question[]) {
     let result = await app.invoke(initialState, config)
 
     const rl = readline.createInterface({ input: stdin, output: stdout });
+    
 
     while(true){
 

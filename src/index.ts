@@ -10,7 +10,9 @@ import { invokeAgent } from './langgraphAgent.js';
 import { number } from 'zod/v3';
 import { invokeMainAgent } from './mainAgent.js';
 import { uploadPreCalculatedChunks } from './ai_utils/loadChunkedFacts.js';
-
+import { invokeApiAgent } from './apiAgent.js';
+import test from 'node:test';
+import { timeStamp } from 'console';
 
 const model_5nano = LangChainOpenAImodel();
 const model_5mini = LangChainOpenAImodel('gpt-5-mini');
@@ -314,28 +316,31 @@ async function tryLlm(
 
 await invokeMainAgent(questions)
 
+const testContext = `
 
+const payload = {
 
-// const payload = {
+    task: 'phone',
+    apikey: process.env['AIDEVS_API_KEY'],
+    answer: {
+        "01":"Samuel",
+        "02":"Samuel",
+        "03":"Samuel",
+        "04":"Samuel",
+        "05":"Samuel",
+        "06":"Samuel",
+    }
 
-//     task: 'phone',
-//     apikey: process.env['AIDEVS_API_KEY'],
-//     answer: {
-//         "01":"Samuel",
-//         "02":"Samuel",
-//         "03":"Samuel",
-//         "04":"Samuel",
-//         "05":"Samuel",
-//         "06":"Samuel",
-//     }
+} as ValidationPayload
 
-// } as ValidationPayload
+const url1 = process.env['AIDEVS_REPORT_URL'] as string
 
-// const url1 = process.env['AIDEVS_REPORT_URL'] as string
+const url2 = 'https://rafal.ag3nts.org/b46c3'
+const url3 = 'https://rafal.ag3nts.org/510bc'
+const payload2 = {password: 'NONOMNISMORIAR'} 
 
-// const url2 = 'https://rafal.ag3nts.org/b46c3'
-// const url3 = 'https://rafal.ag3nts.org/510bc'
-// const payload2 = {password: 'NONOMNISMORIAR'} 
+await postPayload<Record<string,string>, Response>(payload2, url2)
 
-// await postPayload<Record<string,string>, Response>(payload2, url2)
+`
+//console.log(await invokeApiAgent(testContext))
 

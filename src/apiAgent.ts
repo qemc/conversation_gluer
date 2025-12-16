@@ -3,9 +3,6 @@ import { ChatOpenAI } from "@langchain/openai";
 import { make_router, system_user_prompt } from "./ai_utils/langchainHelpers.js";
 import {postPayload } from "./utils/utils.js";
 import { Response } from "./types.js";
-import { Console } from "node:console";
-
-
 
 
 const model = new ChatOpenAI({
@@ -79,7 +76,6 @@ async function tryEndpiointNode(state: typeof State.State){
     console.log('=======TRY ENDPOINT NODE - API AGENT=======')
     console.dir(apiResponses, { depth: null, colors: true })
 
-
     return{
         apiResponses: apiResponses
     }
@@ -103,12 +99,11 @@ export async function invokeApiAgent(data: string){
     // graph definition
     const workflow = new StateGraph(State)
         .addNode('pswd', getPasswordNode)
-        .addNode('endpoints', getEndpointsNode)
+        .addNode('end', getEndpointsNode)
         .addNode('execute', tryEndpiointNode)
         .addEdge(START, 'pswd')
-        .addEdge(START, 'endpoints')
-        .addEdge('pswd', 'execute')
-        .addEdge('endpoints', 'execute')
+        .addEdge('pswd', 'end')
+        .addEdge('end', 'execute')
         .addEdge('execute', END)
         
     // first workflow compilation
