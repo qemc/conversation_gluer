@@ -45,7 +45,7 @@ const researchTool = tool(
     },
     {
         name: 'research_query',
-        description: 'Służy do weryfikacji faktów w bazie wektorowej. Mechanizm wykorzystuje podobieństwo kosinusowe (cosine similarity), dlatego formułując zapytanie, skup się na ogólnym sensie i kontekście semantycznym poszukiwanej informacji, a nie tylko na słowach kluczowych.',
+        description: 'Służy do dopisania faktów z bazy wektorowej do aktualnego kontekstu. Przykładowe informacje, które tam są to: informacje na temat poszczególnych rozmówców, równiez tych, którzy nie sa wymienieni z imienia, opisy miejsc wspomnianych w konwersacjach. Mechanizm wykorzystuje podobieństwo kosinusowe (cosine similarity), dlatego formułując zapytanie, skup się na ogólnym sensie i kontekście semantycznym poszukiwanej informacji, a nie tylko na słowach kluczowych.',
         schema: z.object({
             query: z.string().describe(
                 'Szczegółowe zdanie lub pytanie w języku naturalnym opisujące poszukiwany fakt. ' +
@@ -194,18 +194,28 @@ async function dataGatheringNode(state: typeof State.State){
     const prompt = system_user_prompt(
         `
         **Rola:**
-        Jesteś odpowiedzialny za weryfikację kompletności danych. Głęboko analizujesz otrzymane dane kontekście oraz w instrukcji systemowej aby poprawnie ocenić kompletność danych. 
+        Jesteś odpowiedzialny za weryfikację kompletności danych. Głęboko analizujesz otrzymany kontekst i weryfikujesz czy aktualnie zebrane dane są kompletne i pozwalają poprawnie odpowiedzieć na pytanie załączone w instrukcji systemowej.
 
         **Zadanie:**
-        Weryfkacja, czy aktualnie zgromadzone dane, są wystarczające aby odpowiedzieć na pytanie zgodnie z podanym formatem oraz czynnościami, które nalezy wykonać.
+        Weryfkacja, czy aktualnie zgromadzone dane, są wystarczające aby odpowiedzieć na pytanie zgodnie z podanym formatem oraz czynnościami, które nalezy wykonać. Aby przejść dalej, musisz być pewien, ze identfikacja osób wspomnianych w pytaniach jest mozliwa. Imona osób nie zawsze będą bezpośrednio podane w konwersacji, część z nich moze być przedstawiana przy uzyciu pseudonimu, identyfikacja innych osób, będzie wymagała tylko analizy kontekstu. W kazdym przypadku głęboko analizuj kontekst. 
 
-        Zidentyfikuj imiona kazdego z rozmówców. Jeśli w konwersacji pojawia się agentka, musisz znaleźć jej imię. 
+        Kluczowa jest identyfikacja osób, które są wspomniane w pytaniu. Jeśli identyfikacja osób, których dotyczy pytanie nie jest mozliwa na podstawie konwersacji, nalezy skorzystać z narzędzia 'research_query'. 
 
         Kontekst w pierwszej iteracji zawiera tylko konwersacje. Jeśli w kontekście po 'Informacje zebrane z Faktów:' będzie tekst, to oznacza, ze nie jest to pierwsza iteracja, będą tam się znajdować dopisane dane z bazy wektorowej z faktami. 
 
-        Konwersacje powinny być Twoim głównym źródłem informacji, jeśli jednak będzie brakowało informacji potrzebnych do wypełnienia zadania, wywołaj narzędzie: 'research_query', które dopisze do kontekstu wynik, dopasowany do zapytania podanego w argumencie wywołania narzędzia. Pamiętaj, ze fakty są przechowywane w bazie wektorowej. Twoje zapytanie powinno brać pod uwagę charakterystykę rozumienia 'wektorów'. To znaczy, ze baza zamieni Twoje zapytanie na wektory oraz zwróci dopasowaną odpowiedź. Postaraj się zawrzeć słowa klucz. 
+        Jeśli w sekcji konekstu 'Błędna odpowiedzi na aktualne pytanie:' będzie znajdował sie tekst, będzie to grupa uprzednio udzielonych błędnych odpowiedzi na aktualnie zadawane pytanie. Nie mozesz pod zadnym pozorem ponownie udzielić tej odpowiedzi.
+
+        Jeśli nie jest to pierwsze pytanie, w sekcji <Poprzednie pytania> znajdziesz poprzednio zadane pytania oraz poprawne odpowiedzi, które zostały na nie udzielone. Te informacje mogą byc przydatne podczas weryfikacji kompletności wiedz. 
+
+        Pamiętaj, ze konwersacje są Twoim głównym źródłem informacji, które pozwolą Tobie poprawinie odpowiedzieć na pytanie. Upewnij się, ze uzycie narzędzia 'research_query' jest uzasadnione.  
+
+        Najpierw przeanalizuj wszystkie dostępne rozmowy aby mieć 100% pewność, ze skorzystanie z bazy faktów jest niezbędne aby poprawnie odpowiedzieć na pytanie.
+
+        Jeśli pytanie wróciło, to znaczy, ze brakuje informacji. Wykorzystaj wtedy narzędzie 'research_query'.
+
+        Jeśli odpowiedź na pytanie będzie wymagało skorzystania z bazy faktów do potwierdzenia informacji, wywołaj narzędzie: 'research_query', które dopisze do kontekstu wynik, dopasowany do zapytania podanego w argumencie wywołania narzędzia. Pamiętaj, ze fakty są przechowywane w bazie wektorowej. Twoje zapytanie powinno brać pod uwagę charakterystykę rozumienia 'wektorów'. To znaczy, ze baza zamieni Twoje zapytanie na wektory oraz zwróci dopasowaną odpowiedź. Postaraj się zawrzeć słowa klucz. 
         
-        Jeśli uznasz, ze aktualnie zgromadzone dane w polu <zebrany_kontekst> są wystarczające, aby poprawnie odpowiedzieć na pytanie w odpowiednim formacie oraz wykonać wszystkie potrzebne kroki aby odpowiedziec na pytanie wybierz narzędzie: 'proceed_further_tool'. W argumencie wywołania narzędzia podaj krótką odpowiedź na pytanie: 'dlaczego uwazasz, ze aktualnie zebrane dane są wystarczające aby odpowiedzieć na pytanie?'.         
+        Jeśli aktualnie zgromadzone dane w polu <zebrany_kontekst> są wystarczające, aby poprawnie odpowiedzieć na pytanie w odpowiednim formacie oraz wykonać wszystkie potrzebne kroki aby odpowiedziec na pytanie wybierz narzędzie: 'proceed_further_tool'. W argumencie wywołania narzędzia podaj krótką odpowiedź na pytanie: 'dlaczego uwazasz, ze aktualnie zebrane dane są wystarczające aby odpowiedzieć na pytanie?'.         
 
         Pytanie:{question}
         {plan}
@@ -365,8 +375,19 @@ async function apiAgentNode(state: typeof State.State){
     }
 }
 
+
+
 // adjust prompt
 async function answerNode(state: typeof State.State){
+
+    const lastDataGatheringMessage = state.dataGatheringResponses[state.dataGatheringResponses.length - 1] as AIMessage;
+
+    if(!(lastDataGatheringMessage?.tool_calls?.length)){
+        throw new Error ('No tools have been called in qdrantResearchNode') 
+    }    
+    const summary = lastDataGatheringMessage.tool_calls[0].args.summary;
+
+
     const prompt = system_user_prompt(
         `
             **Rola:**
@@ -375,9 +396,20 @@ async function answerNode(state: typeof State.State){
             **Zadanie:**
             Odpowiedz na pytanie na podstawie podanego kontekstu w polu <kontekst>, formatu odpowiedzi oraz kroków do wykonania. 
             Zwracaj uwagę na fakty, i bierz pod uwagę kolejność konwersacji poniewaz tez jest kluczowa. Kolejność jest wskazana przez numer konwersacji. 
-            Zwróć równiez uwagę na elementy w tagu <Poprzednie pytania>. Są tam informacje, które mogą przydać się w kolejnych pytaniach.
-            Wypisz najwazniejsze elementy, które pomogą Tobie zidentyfikować prawidłową odpowiedź, zignoruj szum.
             
+            PAMIĘTAJ: Twoim głównym źródłem informacji są konwersacje podane w kontekście.
+
+            Jeśli w sekcji konekstu 'Błędna odpowiedzi na aktualne pytanie:' będzie znajdował sie tekst, będzie to grupa uprzednio udzielonych błędnych odpowiedzi na aktualnie zadawane pytanie. Nie mozesz ponownie udzielić tej odpowiedzi bezpośrednio w tej formie. 
+
+            Jeśli nie jest to pierwsze pytanie, w sekcji <Poprzednie pytania> znajdziesz poprzednio zadane pytania oraz poprawne odpowiedzi, które zostały na nie udzielone. Te informacje mogą byc przydatne podczas weryfikacji kompletności wiedz. 
+
+            Kroki:
+            - Przeanalizuj kontekst oraz pytanie.
+            - Wypisz imiona wszyskich osób, które pojawiają się w pytaniu oraz, które są potrzebne aby poprawnie odpowiedzieć na pytanie. 
+            - Podsumuj aktualnie zebrane informacje.
+            - Udziel odpowiedzi zgodznie z **Formą odpowiedzi**
+            
+
             Pytanie: {question}
             {plan}
 
