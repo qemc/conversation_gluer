@@ -1,11 +1,11 @@
 import { StateGraph, START, END, Annotation, messagesStateReducer, MemorySaver } from "@langchain/langgraph";
-import { ChatOpenAI, convertReasoningSummaryToResponsesReasoningItem } from "@langchain/openai";
+import { ChatOpenAI } from "@langchain/openai";
 import { Answer, Question } from "./types.js";
 import { make_router, system_user_prompt } from "./ai_utils/langchainHelpers.js";
 import { promises as fs } from "fs";
 import * as path from "path";
 import { Response,JsonFileConv, ValidationPayload } from "./types.js";
-import { success, z } from "zod"
+import { z } from "zod"
 import { tool } from "@langchain/core/tools";
 import { QdrantClient } from "@qdrant/js-client-rest";
 import { get_embedding } from "./ai_utils/langchainHelpers.js";
@@ -14,7 +14,6 @@ import * as readline from "node:readline/promises"
 import {stdin, stdout } from "node:process";
 import { invokeApiAgent } from "./apiAgent.js";
 import { postPayload, extractQuestionId } from "./utils/utils.js";
-import { finished } from "node:stream";
 
 
 const CONV_PATH = process.env['CONV_PATH'] as string;
@@ -122,7 +121,6 @@ const State = Annotation.Root({
     wrongAnswers: Annotation<string>
 })
 
-
 async function answerPlanNode(state: typeof State.State){
     
     const prompt = system_user_prompt(
@@ -197,21 +195,26 @@ async function dataGatheringNode(state: typeof State.State){
         Jesteś odpowiedzialny za weryfikację kompletności danych. Głęboko analizujesz otrzymany kontekst i weryfikujesz czy aktualnie zebrane dane są kompletne i pozwalają poprawnie odpowiedzieć na pytanie załączone w instrukcji systemowej.
 
         **Zadanie:**
-        Weryfkacja, czy aktualnie zgromadzone dane, są wystarczające aby odpowiedzieć na pytanie zgodnie z podanym formatem oraz czynnościami, które nalezy wykonać. Aby przejść dalej, musisz być pewien, ze identfikacja osób wspomnianych w pytaniach jest mozliwa. Imona osób nie zawsze będą bezpośrednio podane w konwersacji, część z nich moze być przedstawiana przy uzyciu pseudonimu, identyfikacja innych osób, będzie wymagała tylko analizy kontekstu. W kazdym przypadku głęboko analizuj kontekst. 
+        Weryfkacja, czy aktualnie zgromadzone dane, są wystarczające aby poprawnie odpowiedzieć na pytanie zgodnie z podanym formatem oraz czynnościami, które nalezy wykonać. 
+        
+        Kluczowe informacje:
+        - Aby przejść dalej upewnij się, ze masz wystarczająco duzo informacji, aby zidentyfikować osoby, które są wspomniane w pytaniu, jeśli pytanie dotyczy ludzi.
+        
+        - Imona osób nie zawsze będą bezpośrednio podane w konwersacji, część z nich moze być przedstawiana przy uzyciu pseudonimu, identyfikacja osób moze wymagać tylko analizy kontekstu.
 
-        Kluczowa jest identyfikacja osób, które są wspomniane w pytaniu. Jeśli identyfikacja osób, których dotyczy pytanie nie jest mozliwa na podstawie konwersacji, nalezy skorzystać z narzędzia 'research_query'. 
+        - Jeśli uwazasz, ze posiadasz niekompletne informacje aby zidentyfikować osoby wspomniane w pytaniu, uzyj narzędzia 'research_query'.
 
-        Kontekst w pierwszej iteracji zawiera tylko konwersacje. Jeśli w kontekście po 'Informacje zebrane z Faktów:' będzie tekst, to oznacza, ze nie jest to pierwsza iteracja, będą tam się znajdować dopisane dane z bazy wektorowej z faktami. 
+        - Kontekst w pierwszej iteracji zawiera tylko konwersacje. Jeśli w kontekście po 'Informacje zebrane z Faktów:' będzie tekst, to oznacza, ze nie jest to pierwsza iteracja, będą tam się znajdować dopisane dane z bazy wektorowej z faktami. 
 
-        Jeśli w sekcji konekstu 'Błędna odpowiedzi na aktualne pytanie:' będzie znajdował sie tekst, będzie to grupa uprzednio udzielonych błędnych odpowiedzi na aktualnie zadawane pytanie. Nie mozesz pod zadnym pozorem ponownie udzielić tej odpowiedzi.
+        - Tekst sekcji konekstu 'Błędna odpowiedzi na aktualne pytanie:' wskazuje, ze będzie to grupa uprzednio udzielonych błędnych odpowiedzi na aktualnie zadawane pytanie. Nie mozesz pod zadnym pozorem ponownie udzielić tej odpowiedzi.
 
-        Jeśli nie jest to pierwsze pytanie, w sekcji <Poprzednie pytania> znajdziesz poprzednio zadane pytania oraz poprawne odpowiedzi, które zostały na nie udzielone. Te informacje mogą byc przydatne podczas weryfikacji kompletności wiedz. 
+        - Jeśli nie jest to pierwsze pytanie, w sekcji <Poprzednie pytania> znajdziesz poprzednio zadane pytania oraz poprawne odpowiedzi, które zostały na nie udzielone. Te informacje mogą byc przydatne podczas weryfikacji kompletności wiedz. 
 
-        Pamiętaj, ze konwersacje są Twoim głównym źródłem informacji, które pozwolą Tobie poprawinie odpowiedzieć na pytanie. Upewnij się, ze uzycie narzędzia 'research_query' jest uzasadnione.  
+        - konwersacje są Twoim głównym źródłem informacji, które pozwolą Tobie poprawinie odpowiedzieć na pytanie. Upewnij się, ze uzycie narzędzia 'research_query' jest uzasadnione.  
 
-        Najpierw przeanalizuj wszystkie dostępne rozmowy aby mieć 100% pewność, ze skorzystanie z bazy faktów jest niezbędne aby poprawnie odpowiedzieć na pytanie.
+        - Najpierw przeanalizuj wszystkie dostępne rozmowy aby mieć 100% pewność, ze skorzystanie z bazy faktów jest niezbędne aby poprawnie odpowiedzieć na pytanie.
 
-        Jeśli pytanie wróciło, to znaczy, ze brakuje informacji. Wykorzystaj wtedy narzędzie 'research_query'.
+        - Jeśli pytanie wróciło, to znaczy, ze brakuje informacji. Wykorzystaj wtedy narzędzie 'research_query'.
 
         Jeśli odpowiedź na pytanie będzie wymagało skorzystania z bazy faktów do potwierdzenia informacji, wywołaj narzędzie: 'research_query', które dopisze do kontekstu wynik, dopasowany do zapytania podanego w argumencie wywołania narzędzia. Pamiętaj, ze fakty są przechowywane w bazie wektorowej. Twoje zapytanie powinno brać pod uwagę charakterystykę rozumienia 'wektorów'. To znaczy, ze baza zamieni Twoje zapytanie na wektory oraz zwróci dopasowaną odpowiedź. Postaraj się zawrzeć słowa klucz. 
         
@@ -419,7 +422,6 @@ async function answerNode(state: typeof State.State){
         `
             <kontekst>
             {context}
-            Imię Agentki to Barbara!!!
             </kontekst>
         `
     )

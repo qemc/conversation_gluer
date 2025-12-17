@@ -7,17 +7,11 @@ import {stdin, stdout } from "node:process";
 import { make_router, system_user_prompt } from "./ai_utils/langchainHelpers.js";
 import { JsonOutputParser } from "@langchain/core/output_parsers";
 import { filterOutItems, saveJsonToFile } from "./utils/utils.js";
-import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { promises as fs } from "fs";
-import * as path from 'path';
 
 const model = new ChatOpenAI({
     model: 'o3'
 })
-
-// const model = new ChatGoogleGenerativeAI({
-//     model: 'gemini-2.5-flash'
-// })
 
 const CACHE_PATH = process.env['CACHE_PATH'] as string;
 const CONV_PATH = process.env['CONV_PATH'] as string;
@@ -56,6 +50,9 @@ const State = Annotation.Root({
     usedParts: Annotation<string[]>
 })
 
+
+// Node responsible for sending main prompt to the model. 
+// Based on the input data and feedback from prevoius iterations returns glued conversation.
 async function promptNode(state: typeof State.State) {
 
     const statementsList = state.statementsList;
@@ -136,7 +133,7 @@ async function promptNode(state: typeof State.State) {
         previousResponses: previousResponses
     }
 }
-
+// Parses the answer from the  promptNode in case the returned conversation was accepted by human
 async function parserNode(state: typeof State.State){
 
     const lastMessage = state.aiResponses[state.aiResponses.length - 1];
@@ -176,10 +173,7 @@ async function parserNode(state: typeof State.State){
         }
     }
 }
-
-// prompt -> hitl (AI in the future) -> parser + remove good looking items from the list 
-//                                   -> repeat + include mistaken sequence
-
+// Mock node for 'human in the loop implementation'
 function humanApprove(state: typeof State.State){
     return{}
 }
@@ -361,9 +355,3 @@ export async function invokeAgent(data: Data){
     }
     
 }
-
-// TO DO:
-// Implement saverNode to the graph structure - done
-// Test if saverNode works properly - done
-// Think of implementing initial state from file (so the successfully processed conversations won't be processed multiple times) - done
-

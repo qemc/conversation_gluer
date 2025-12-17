@@ -45,7 +45,6 @@ export function LangChainOpenAImodel(
 }
 
 // this function declares the runnable that will be responsible for launching the query
-
 export function make_router(
 
     model: ChatOpenAI | ChatGoogleGenerativeAI | Runnable<BaseLanguageModelInput, BaseMessage>, // model which will process the question
@@ -79,7 +78,6 @@ export function make_router(
         }
 
         let tokensUsed = 0;
-        // Standard LangChain JS usage location
         if (aiMsg?.usage_metadata?.total_tokens) {
             tokensUsed = aiMsg.usage_metadata.total_tokens;
         }
@@ -112,7 +110,6 @@ export async function get_embedding(text:string): Promise<number[]>{
 
         return result;
 }
-// createQdrantCollection(qdrant_client, 'zad51_coll', 1536, 'Cosine')
 export async function createQdrantCollection(
 
   client: QdrantClient,
@@ -181,5 +178,3 @@ export function make_human_router(
     };
   });
 }
-
-
